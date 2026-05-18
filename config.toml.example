@@ -1,0 +1,17 @@
+# Example Fulla replication-only TOML fragment. Point FULLA_CONFIG at this file.
+#
+# [replication.litestream]
+# enabled = false
+# replica_url = "s3://mybucket/fulla-db"
+# dynamic_dns_host = "fulla-replica.dyndns.example.com"
+# interval_minutes = 60
+#
+# [replication.ssh]
+# enabled = false
+# remote_user = "fulla"
+# remote_host = "replica.example.com"
+# remote_path = "/var/lib/fulla/keyserver.db"
+# ssh_key_path = "/etc/fulla/replication_id_ed25519"
+# dynamic_dns_host = "fulla-replica.dyndns.example.com"
+# interval_minutes = 60
+# offset_minutes = 5

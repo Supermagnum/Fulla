@@ -1,0 +1,9 @@
+{% extends "base" %}
+{% block title %}Declined{% endblock %}
+{% block body %}
+  <h1>Replacement declined</h1>
+  {% if expired %}
+    <p>That confirmation token is expired or unknown.</p>
+  {% endif %}
+  <p>Replacement declined. Your existing key is unchanged.</p>
+{% endblock %}

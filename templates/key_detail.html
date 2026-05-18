@@ -1,0 +1,31 @@
+{% extends "base" %}
+{% block title %}Key detail{% endblock %}
+{% block body %}
+  <h1>Registered key material</h1>
+
+  <p><strong>Status:</strong> {{ status }}</p>
+  <p><strong>Fingerprint:</strong> <code>{{ fingerprint }}</code></p>
+  <p><strong>Mailbox:</strong> {{ email }}</p>
+
+  {% if first_name or last_name %}<p><strong>Name:</strong> {{ first_name | default("") }} {{ last_name | default("") }}</p>{% endif %}
+  {% if callsign %}<p><strong>Callsign:</strong> {{ callsign }}</p>{% endif %}
+  {% if dmr_id %}<p><strong>DMR ID:</strong> {{ dmr_id }}</p>{% endif %}
+  {% if radio_affiliation %}<p><strong>Affiliation:</strong> {{ radio_affiliation }}</p>{% endif %}
+  {% if fluxer_id %}<p><strong>Fluxer:</strong> {{ fluxer_id }}</p>{% endif %}
+  {% if discord_id %}<p><strong>Discord:</strong> {{ discord_id }}</p>{% endif %}
+  {% if irc_id %}<p><strong>IRC:</strong> {{ irc_id }}</p>{% endif %}
+  {% if street %}<p><strong>Street:</strong> {{ street }}</p>{% endif %}
+  {% if country %}<p><strong>Country:</strong> {{ country }}</p>{% endif %}
+  {% if postal_code %}<p><strong>Postal code:</strong> {{ postal_code }}</p>{% endif %}
+  {% if region %}<p><strong>Region:</strong> {{ region }}</p>{% endif %}
+
+  <p><strong>Submitted:</strong> {{ submitted_at }}</p>
+
+  {% if status == "revoked" %}
+    <p><strong>Revoked at:</strong> {{ revoked_at | default("unknown") }}</p>
+    <p><strong>Reason:</strong> {{ revocation_reason | default("unknown") }}</p>
+  {% endif %}
+
+  <h2>ASCII-armoured key</h2>
+  <pre><code>{{ armored_key }}</code></pre>
+{% endblock %}

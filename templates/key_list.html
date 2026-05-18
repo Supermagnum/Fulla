@@ -1,0 +1,52 @@
+{% extends "base" %}
+{% block title %}Keys{% endblock %}
+{% block body %}
+  <h1>Indexed keys</h1>
+
+  <form method="GET" action="/keys">
+    <label>Email <input type="text" name="email"></label>
+    <label>Fingerprint prefix <input type="text" name="fingerprint"></label>
+    <label>Callsign <input type="text" name="callsign"></label>
+    <label>DMR ID <input type="number" name="dmr_id"></label>
+    <button type="submit">Search</button>
+  </form>
+
+  <table border="1" cellpadding="4" cellspacing="0">
+    <thead>
+      <tr>
+        <th>Fingerprint</th>
+        <th>Name</th>
+        <th>Callsign</th>
+        <th>DMR</th>
+        <th>Affiliation</th>
+        <th>Submitted</th>
+        <th>Status</th>
+        <th>Detail</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+        <tr>
+          <td><code>{{ r.fingerprint }}</code></td>
+          <td>{{ r.first_name | default("") }} {{ r.last_name | default("") }}</td>
+          <td>{{ r.callsign | default("") }}</td>
+          <td>{% if r.dmr_id %}{{ r.dmr_id }}{% endif %}</td>
+          <td>{{ r.radio_affiliation | default("") }}</td>
+          <td>{{ r.submitted_at }}</td>
+          <td>{{ r.status }}</td>
+          <td><a href="/keys/{{ r.fingerprint }}">view</a></td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p>
+    {% if page > 1 %}
+      <a href="?page={{ page - 1 }}&amp;per_page={{ per_page }}">Previous</a>
+    {% endif %}
+    {% if rows | length == per_page %}
+      | <a href="?page={{ page + 1 }}&amp;per_page={{ per_page }}">Next</a>
+    {% endif %}
+  </p>
+  <p>Approximate filtered rows on this page (total count in database snapshot): {{ total }}</p>
+{% endblock %}

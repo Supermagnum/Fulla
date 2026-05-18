@@ -1,0 +1,28 @@
+{% extends "base" %}
+{% block title %}Overview{% endblock %}
+{% block body %}
+  <article>
+    <h1>Galdralag hardware key registry</h1>
+
+    <p><strong>This is not a general-purpose OpenPGP keyserver.</strong> Fulla is a closed,
+    project-local registry for public keys belonging to owners and maintainers of
+    Galdralag hardware. It does not gossip with SKS, HKP, or <span>keys.openpgp.org</span>; it does
+    not accept anonymous uploads.</p>
+
+    <p>Anyone landing here should understand immediately:</p>
+
+    <blockquote>
+      <p>Fulla is a private key registry for owners of <strong>Galdralag hardware</strong> only.
+      It is not a general-purpose OpenPGP keyserver. If you are looking for someone's public key
+      and they do not own Galdralag hardware, this is the wrong place. Keys here were generated on
+      Galdralag hardware tokens by members of the Galdralag amateur-radio community.</p>
+    </blockquote>
+
+    <p>Keys must include at least one community identifier alongside a validated mailbox (such as
+    a callsign, DMR ID, or radio-affiliation hint). Algorithms are constrained to match what
+    Galdralag tokens generate; uploads that diverge from that profile are refused.</p>
+
+    <p>Use the firmware <code>galdra keyserver</code> CLI to push or fetch when your
+    configuration points at this host.</p>
+  </article>
+{% endblock %}

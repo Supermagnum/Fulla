@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}Fulla{% endblock %} | Galdralag registry</title>
+</head>
+<body>
+  <header>
+    <nav>
+      <a href="/">Home</a> |
+      <a href="/keys">Keys</a> |
+      <a href="/submit">Submit</a> |
+      <a href="/revoke">Revoke</a>
+    </nav>
+    <hr>
+  </header>
+  {% block body %}{% endblock %}
+  <footer>
+    <hr>
+    <small>Fulla registry for Galdralag hardware users only.</small>
+  </footer>
+</body>
+</html>

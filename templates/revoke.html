@@ -1,0 +1,16 @@
+{% extends "base" %}
+{% block title %}Revoke{% endblock %}
+{% block body %}
+  <h1>Revoke registry entry</h1>
+
+  <p>Paste your ASCII-armoured revocation certificate. The revocation must cryptographically bind
+    to the fingerprint this registry holds.</p>
+
+  <form method="POST" action="/revoke">
+    <p><label>Mailbox on file<br><input name="email" type="email" required></label></p>
+    <p><label>Revocation certificate<br>
+      <textarea name="armored_revocation_cert" rows="14" cols="82" required></textarea>
+    </label></p>
+    <button type="submit">Submit revocation</button>
+  </form>
+{% endblock %}

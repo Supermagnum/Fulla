@@ -1,0 +1,28 @@
+{% extends "base" %}
+{% block title %}Submit{% endblock %}
+{% block body %}
+  <h1>Register key</h1>
+
+  <p>Only keys generated on <strong>Galdralag hardware</strong> meet the cryptography profile this
+   registry expects. Entries also require community metadata (alongside validated email).</p>
+
+  <form method="POST" action="/submit">
+    <p><label>Email<br><input name="email" type="email" required></label></p>
+    <p><label>First name<br><input name="first_name" type="text"></label></p>
+    <p><label>Last name<br><input name="last_name" type="text"></label></p>
+    <p><label>Fluxer ID<br><input name="fluxer_id" type="text"></label></p>
+    <p><label>Discord ID<br><input name="discord_id" type="text"></label></p>
+    <p><label>IRC ID<br><input name="irc_id" type="text"></label></p>
+    <p><label>Callsign<br><input name="callsign" type="text"></label></p>
+    <p><label>DMR ID<br><input name="dmr_id" type="number" min="1" max="16777215"></label></p>
+    <p><label>Radio affiliation<br><input name="radio_affiliation" type="text"></label></p>
+    <p><label>Street<br><input name="street" type="text"></label></p>
+    <p><label>Country<br><input name="country" type="text"></label></p>
+    <p><label>Postal code<br><input name="postal_code" type="text"></label></p>
+    <p><label>Region<br><input name="region" type="text"></label></p>
+    <p><label>ASCII-armoured public key<br>
+      <textarea name="armored_public_key" rows="14" cols="82" required></textarea>
+    </label></p>
+    <button type="submit">Submit</button>
+  </form>
+{% endblock %}

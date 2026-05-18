@@ -1,0 +1,57 @@
+[package]
+name = "fulla"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "fulla"
+path = "src/main.rs"
+
+[dependencies]
+sequoia-openpgp = { version = "1", default-features = false, features = [
+    "compression-deflate",
+    "crypto-rust",
+    "allow-experimental-crypto",
+    "allow-variable-time-crypto",
+] }
+axum = "0.7"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+tower = "0.5"
+tower-http = { version = "0.5", features = [
+    "trace",
+    "compression-br",
+    "redirect",
+    "limit",
+] }
+sqlx = { version = "0.8", features = [
+    "sqlite",
+    "runtime-tokio-rustls",
+    "chrono",
+    "uuid",
+] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+lettre = { version = "0.11", default-features = false, features = [
+    "smtp-transport",
+    "tokio1",
+    "tokio1-rustls-tls",
+    "builder",
+] }
+minijinja = "2"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+anyhow = "1"
+dotenvy = "0.15"
+governor = "0.6"
+rand = "0.8"
+toml = "0.8"
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+] }
+base64 = "0.22"
+percent-encoding = "2"
+url = "2"

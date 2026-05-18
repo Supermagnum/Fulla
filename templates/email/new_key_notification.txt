@@ -1,0 +1,15 @@
+A request has been made to replace your Galdralag key registry entry.
+
+Current fingerprint  : {{ old_fingerprint }}
+Requested fingerprint: {{ new_fingerprint }}
+{% if callsign %}Callsign    : {{ callsign }}
+{% endif %}{% if dmr_id %}DMR ID      : {{ dmr_id }}
+{% endif %}{% if radio_affiliation %}Affiliation : {{ radio_affiliation }}
+{% endif %}
+
+To approve this replacement: {{ confirm_url }}
+To reject  this replacement: {{ reject_url }}
+
+This link expires in {{ expires_hours }} hours.
+If you did not request this change, click reject and consider revoking
+your current key.
