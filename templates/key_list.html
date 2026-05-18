@@ -4,10 +4,16 @@
   <h1>Indexed keys</h1>
 
   <form method="GET" action="/keys">
-    <label>Email <input type="text" name="email"></label>
-    <label>Fingerprint prefix <input type="text" name="fingerprint"></label>
-    <label>Callsign <input type="text" name="callsign"></label>
-    <label>DMR ID <input type="number" name="dmr_id"></label>
+    <label>Email <input type="text" name="email" value="{{ query.email | default("") }}"></label>
+    <label>Fingerprint prefix <input type="text" name="fingerprint" value="{{ query.fingerprint | default("") }}"></label>
+    <label>Callsign <input type="text" name="callsign" value="{{ query.callsign | default("") }}"></label>
+    <label>DMR ID <input type="number" name="dmr_id" value="{{ query.dmr_id | default("") }}"></label>
+    <label>Discord ID <input type="text" name="discord_id" value="{{ query.discord_id | default("") }}"></label>
+    <label>IRC ID <input type="text" name="irc_id" value="{{ query.irc_id | default("") }}"></label>
+    <label>Fluxer ID <input type="text" name="fluxer_id" value="{{ query.fluxer_id | default("") }}"></label>
+    <label>First name contains <input type="text" name="first_name" value="{{ query.first_name | default("") }}"></label>
+    <label>Last name contains <input type="text" name="last_name" value="{{ query.last_name | default("") }}"></label>
+    <input type="hidden" name="per_page" value="{{ per_page }}">
     <button type="submit">Search</button>
   </form>
 
@@ -41,11 +47,14 @@
   </table>
 
   <p>
-    {% if page > 1 %}
-      <a href="?page={{ page - 1 }}&amp;per_page={{ per_page }}">Previous</a>
+    {% if pager_qs_prev %}
+      <a href="/keys?{{ pager_qs_prev | safe }}">Previous</a>
     {% endif %}
-    {% if rows | length == per_page %}
-      | <a href="?page={{ page + 1 }}&amp;per_page={{ per_page }}">Next</a>
+    {% if pager_qs_prev and pager_qs_next %}
+      |
+    {% endif %}
+    {% if pager_qs_next %}
+      <a href="/keys?{{ pager_qs_next | safe }}">Next</a>
     {% endif %}
   </p>
   <p>Approximate filtered rows on this page (total count in database snapshot): {{ total }}</p>

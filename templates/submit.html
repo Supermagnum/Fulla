@@ -4,7 +4,8 @@
   <h1>Register key</h1>
 
   <p>Only keys generated on <strong>Galdralag hardware</strong> meet the cryptography profile this
-   registry expects. Entries also require community metadata (alongside validated email).</p>
+    registry expects. Email and the ASCII-armoured public key are sufficient; amateur-radio and profile
+    fields are optional and line up with <code>galdra keyserver push</code>.</p>
 
   <form method="POST" action="/submit">
     <p><label>Email<br><input name="email" type="email" required></label></p>
@@ -20,6 +21,10 @@
     <p><label>Country<br><input name="country" type="text"></label></p>
     <p><label>Postal code<br><input name="postal_code" type="text"></label></p>
     <p><label>Region<br><input name="region" type="text"></label></p>
+    <p><label>Organisation<br><input name="organisation" type="text"></label></p>
+    <p><label>Role<br><input name="role" type="text"></label></p>
+    <p><label>Note<br><textarea name="note" rows="4" cols="82"></textarea></label></p>
+    <p><label>Badge number<br><input name="badge_number" type="text"></label></p>
     <p><label>ASCII-armoured public key<br>
       <textarea name="armored_public_key" rows="14" cols="82" required></textarea>
     </label></p>

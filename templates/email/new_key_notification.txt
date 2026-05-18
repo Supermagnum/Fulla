@@ -5,6 +5,10 @@ Requested fingerprint: {{ new_fingerprint }}
 {% if callsign %}Callsign    : {{ callsign }}
 {% endif %}{% if dmr_id %}DMR ID      : {{ dmr_id }}
 {% endif %}{% if radio_affiliation %}Affiliation : {{ radio_affiliation }}
+{% endif %}{% if organisation %}Organisation : {{ organisation }}
+{% endif %}{% if role %}Role        : {{ role }}
+{% endif %}{% if badge_number %}Badge       : {{ badge_number }}
+{% endif %}{% if note %}Note        : {{ note }}
 {% endif %}
 
 To approve this replacement: {{ confirm_url }}

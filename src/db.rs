@@ -20,8 +20,9 @@ pub async fn insert_key(pool: &SqlitePool, record: &NewKeyRecord) -> Result<()> 
             fluxer_id, discord_id, irc_id,
             callsign, dmr_id, radio_affiliation,
             street, country, postal_code, region,
+            organisation, role, note, badge_number,
             submitted_at, revoked_at, revocation_reason, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'active')
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 'active')
         "#,
     )
     .bind(&record.fingerprint)
@@ -39,6 +40,10 @@ pub async fn insert_key(pool: &SqlitePool, record: &NewKeyRecord) -> Result<()> 
     .bind(&record.country)
     .bind(&record.postal_code)
     .bind(&record.region)
+    .bind(&record.organisation)
+    .bind(&record.role)
+    .bind(&record.note)
+    .bind(&record.badge_number)
     .bind(&record.submitted_at)
     .execute(pool)
     .await?;
@@ -51,6 +56,7 @@ pub async fn get_key_by_fingerprint(pool: &SqlitePool, fp: &str) -> Result<Optio
         SELECT fingerprint, armored_key, email, first_name, last_name,
                callsign, dmr_id, radio_affiliation, fluxer_id, discord_id, irc_id,
                street, country, postal_code, region,
+               organisation, role, note, badge_number,
                submitted_at, status, revoked_at, revocation_reason
         FROM keys WHERE fingerprint = ?"#,
     )
@@ -69,6 +75,7 @@ pub async fn get_active_key_by_fingerprint(
         SELECT fingerprint, armored_key, email, first_name, last_name,
                callsign, dmr_id, radio_affiliation, fluxer_id, discord_id, irc_id,
                street, country, postal_code, region,
+               organisation, role, note, badge_number,
                submitted_at, status, revoked_at, revocation_reason
         FROM keys WHERE fingerprint = ? AND status = 'active'"#,
     )
@@ -85,6 +92,7 @@ pub async fn get_keys_by_email(pool: &SqlitePool, email: &str) -> Result<Vec<Key
         SELECT fingerprint, armored_key, email, first_name, last_name,
                callsign, dmr_id, radio_affiliation, fluxer_id, discord_id, irc_id,
                street, country, postal_code, region,
+               organisation, role, note, badge_number,
                submitted_at, status, revoked_at, revocation_reason
         FROM keys WHERE LOWER(email) = LOWER(?)
         ORDER BY submitted_at DESC"#,
@@ -101,6 +109,7 @@ pub async fn get_active_keys_by_email(pool: &SqlitePool, email: &str) -> Result<
         SELECT fingerprint, armored_key, email, first_name, last_name,
                callsign, dmr_id, radio_affiliation, fluxer_id, discord_id, irc_id,
                street, country, postal_code, region,
+               organisation, role, note, badge_number,
                submitted_at, status, revoked_at, revocation_reason
         FROM keys WHERE LOWER(email) = LOWER(?) AND status = 'active'
         ORDER BY submitted_at DESC"#,
@@ -133,8 +142,9 @@ pub async fn insert_pending(pool: &SqlitePool, pending: &PendingSubmission) -> R
             fluxer_id, discord_id, irc_id,
             callsign, dmr_id, radio_affiliation,
             street, country, postal_code, region,
+            organisation, role, note, badge_number,
             armored_key, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(&pending.token)
@@ -152,6 +162,10 @@ pub async fn insert_pending(pool: &SqlitePool, pending: &PendingSubmission) -> R
     .bind(&pending.country)
     .bind(&pending.postal_code)
     .bind(&pending.region)
+    .bind(&pending.organisation)
+    .bind(&pending.role)
+    .bind(&pending.note)
+    .bind(&pending.badge_number)
     .bind(&pending.armored_key)
     .bind(&pending.expires_at)
     .execute(pool)
@@ -165,6 +179,7 @@ pub async fn get_pending(pool: &SqlitePool, token: &str) -> Result<Option<Pendin
                   fluxer_id, discord_id, irc_id,
                   callsign, dmr_id, radio_affiliation,
                   street, country, postal_code, region,
+                  organisation, role, note, badge_number,
                   armored_key, expires_at
            FROM pending_submissions WHERE token = ?"#,
     )
@@ -207,39 +222,13 @@ pub async fn list_keys(
         r#"SELECT fingerprint, armored_key, email, first_name, last_name,
                   callsign, dmr_id, radio_affiliation, fluxer_id, discord_id, irc_id,
                   street, country, postal_code, region,
+                  organisation, role, note, badge_number,
                   submitted_at, status, revoked_at, revocation_reason
            FROM keys WHERE 1 = 1"#,
     );
 
     let mut binds: Vec<BindArg> = Vec::new();
-
-    if let Some(em) = &filter.email {
-        if !em.is_empty() {
-            q.push_str(" AND LOWER(email) = LOWER(?)");
-            binds.push(BindArg::S(em.clone()));
-        }
-    }
-
-    if let Some(fp) = &filter.fingerprint_prefix {
-        let n = normalize_fp_prefix(fp);
-        if !n.is_empty() {
-            let pat = format!("{n}%");
-            q.push_str(" AND fingerprint LIKE ?");
-            binds.push(BindArg::S(pat));
-        }
-    }
-
-    if let Some(cs) = &filter.callsign {
-        if !cs.is_empty() {
-            q.push_str(" AND callsign = ?");
-            binds.push(BindArg::S(cs.clone()));
-        }
-    }
-
-    if let Some(dm) = filter.dmr_id {
-        q.push_str(" AND dmr_id = ?");
-        binds.push(BindArg::I(dm));
-    }
+    push_key_filter_clauses(&mut q, &mut binds, filter);
 
     q.push_str(" ORDER BY submitted_at DESC LIMIT ? OFFSET ?");
 
@@ -265,10 +254,7 @@ fn normalize_fp_prefix(raw: &str) -> String {
         .to_ascii_uppercase()
 }
 
-pub async fn count_keys(pool: &SqlitePool, filter: &KeyFilter) -> Result<i64> {
-    let mut q = String::from("SELECT COUNT(*) FROM keys WHERE 1 = 1");
-    let mut binds: Vec<BindArg> = Vec::new();
-
+fn push_key_filter_clauses(q: &mut String, binds: &mut Vec<BindArg>, filter: &KeyFilter) {
     if let Some(em) = &filter.email {
         if !em.is_empty() {
             q.push_str(" AND LOWER(email) = LOWER(?)");
@@ -279,14 +265,15 @@ pub async fn count_keys(pool: &SqlitePool, filter: &KeyFilter) -> Result<i64> {
     if let Some(fp) = &filter.fingerprint_prefix {
         let n = normalize_fp_prefix(fp);
         if !n.is_empty() {
+            let pat = format!("{n}%");
             q.push_str(" AND fingerprint LIKE ?");
-            binds.push(BindArg::S(format!("{n}%")));
+            binds.push(BindArg::S(pat));
         }
     }
 
     if let Some(cs) = &filter.callsign {
         if !cs.is_empty() {
-            q.push_str(" AND callsign = ?");
+            q.push_str(" AND callsign IS NOT NULL AND LOWER(callsign) = LOWER(?)");
             binds.push(BindArg::S(cs.clone()));
         }
     }
@@ -295,6 +282,49 @@ pub async fn count_keys(pool: &SqlitePool, filter: &KeyFilter) -> Result<i64> {
         q.push_str(" AND dmr_id = ?");
         binds.push(BindArg::I(dm));
     }
+
+    if let Some(v) = &filter.discord_id {
+        if !v.is_empty() {
+            q.push_str(" AND discord_id IS NOT NULL AND discord_id = ?");
+            binds.push(BindArg::S(v.clone()));
+        }
+    }
+
+    if let Some(v) = &filter.irc_id {
+        if !v.is_empty() {
+            q.push_str(" AND irc_id IS NOT NULL AND irc_id = ?");
+            binds.push(BindArg::S(v.clone()));
+        }
+    }
+
+    if let Some(v) = &filter.fluxer_id {
+        if !v.is_empty() {
+            q.push_str(" AND fluxer_id IS NOT NULL AND fluxer_id = ?");
+            binds.push(BindArg::S(v.clone()));
+        }
+    }
+
+    if let Some(v) = &filter.first_name_contains {
+        if !v.is_empty() {
+            q.push_str(
+                " AND first_name IS NOT NULL AND instr(LOWER(first_name), LOWER(?)) > 0",
+            );
+            binds.push(BindArg::S(v.clone()));
+        }
+    }
+
+    if let Some(v) = &filter.last_name_contains {
+        if !v.is_empty() {
+            q.push_str(" AND last_name IS NOT NULL AND instr(LOWER(last_name), LOWER(?)) > 0");
+            binds.push(BindArg::S(v.clone()));
+        }
+    }
+}
+
+pub async fn count_keys(pool: &SqlitePool, filter: &KeyFilter) -> Result<i64> {
+    let mut q = String::from("SELECT COUNT(*) FROM keys WHERE 1 = 1");
+    let mut binds: Vec<BindArg> = Vec::new();
+    push_key_filter_clauses(&mut q, &mut binds, filter);
 
     let mut qb = sqlx::query_scalar::<_, i64>(&q);
     for b in binds {
@@ -779,6 +809,10 @@ mod tests {
             country: None,
             postal_code: None,
             region: None,
+            organisation: None,
+            role: None,
+            note: None,
+            badge_number: None,
             submitted_at: chrono::Utc::now().to_rfc3339(),
         };
 
@@ -788,5 +822,121 @@ mod tests {
         assert_eq!(rows[0].fingerprint, rec.fingerprint);
         assert_eq!(rows[0].email, rec.email);
         assert_eq!(rows[0].status, "active");
+    }
+
+    #[tokio::test]
+    async fn list_keys_optional_field_filters() {
+        use crate::models::KeyFilter;
+
+        let pool = pool_migrated().await;
+        let ts = chrono::Utc::now().to_rfc3339();
+
+        let r1 = NewKeyRecord {
+            fingerprint: "1000000000000000000000000000000000000001".into(),
+            armored_key: "a1".into(),
+            email: "a@example.com".into(),
+            first_name: Some("Marie".into()),
+            last_name: None,
+            fluxer_id: Some("fx-one".into()),
+            discord_id: Some("snow#1".into()),
+            irc_id: Some("ircbob".into()),
+            callsign: None,
+            dmr_id: None,
+            radio_affiliation: None,
+            street: None,
+            country: None,
+            postal_code: None,
+            region: None,
+            organisation: None,
+            role: None,
+            note: None,
+            badge_number: None,
+            submitted_at: ts.clone(),
+        };
+        let r2 = NewKeyRecord {
+            fingerprint: "2000000000000000000000000000000000000002".into(),
+            armored_key: "a2".into(),
+            email: "b@example.com".into(),
+            first_name: Some("Claude".into()),
+            last_name: Some("Dupont".into()),
+            fluxer_id: None,
+            discord_id: Some("other".into()),
+            irc_id: None,
+            callsign: Some("LB9ZZZ".into()),
+            dmr_id: Some(12345),
+            radio_affiliation: None,
+            street: None,
+            country: None,
+            postal_code: None,
+            region: None,
+            organisation: None,
+            role: None,
+            note: None,
+            badge_number: None,
+            submitted_at: ts,
+        };
+        insert_key(&pool, &r1).await.unwrap();
+        insert_key(&pool, &r2).await.unwrap();
+
+        let mut f = KeyFilter {
+            discord_id: Some("snow#1".into()),
+            ..Default::default()
+        };
+        let rows = list_keys(&pool, &f, 1, 50).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].fingerprint, r1.fingerprint);
+
+        f = KeyFilter {
+            first_name_contains: Some("arie".into()),
+            ..Default::default()
+        };
+        let rows = list_keys(&pool, &f, 1, 50).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].first_name.as_deref(), Some("Marie"));
+
+        f = KeyFilter {
+            last_name_contains: Some("upon".into()),
+            ..Default::default()
+        };
+        let rows = list_keys(&pool, &f, 1, 50).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].fingerprint, r2.fingerprint);
+
+        f = KeyFilter {
+            fluxer_id: Some("fx-one".into()),
+            ..Default::default()
+        };
+        let rows = list_keys(&pool, &f, 1, 50).await.unwrap();
+        assert_eq!(rows.len(), 1);
+
+        f = KeyFilter {
+            irc_id: Some("ircbob".into()),
+            ..Default::default()
+        };
+        let rows = list_keys(&pool, &f, 1, 50).await.unwrap();
+        assert_eq!(rows.len(), 1);
+
+        f = KeyFilter {
+            callsign: Some("lb9zzz".into()),
+            ..Default::default()
+        };
+        let rows = list_keys(&pool, &f, 1, 50).await.unwrap();
+        assert_eq!(rows.len(), 1);
+
+        f = KeyFilter {
+            dmr_id: Some(12345),
+            ..Default::default()
+        };
+        let rows = list_keys(&pool, &f, 1, 50).await.unwrap();
+        assert_eq!(rows.len(), 1);
+
+        f = KeyFilter {
+            fingerprint_prefix: Some("2000".into()),
+            discord_id: Some("other".into()),
+            ..Default::default()
+        };
+        let rows = list_keys(&pool, &f, 1, 50).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].fingerprint, r2.fingerprint);
     }
 }

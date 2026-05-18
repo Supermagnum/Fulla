@@ -33,6 +33,10 @@ pub struct SubmitFormFields {
     pub country: Option<String>,
     pub postal_code: Option<String>,
     pub region: Option<String>,
+    pub organisation: Option<String>,
+    pub role: Option<String>,
+    pub note: Option<String>,
+    pub badge_number: Option<String>,
 }
 
 impl SubmitFormFields {
@@ -65,6 +69,10 @@ impl SubmitFormFields {
             country: self.country,
             postal_code: self.postal_code,
             region: self.region,
+            organisation: self.organisation,
+            role: self.role,
+            note: self.note,
+            badge_number: self.badge_number,
         })
     }
 }
@@ -164,19 +172,22 @@ fn validate_typed(payload: &SubmitPayload) -> Result<(), &'static str> {
         payload.region,
         128
     );
-
-    let has_comm = trim_opt(payload.callsign.clone()).is_some()
-        || payload.dmr_id.is_some()
-        || trim_opt(payload.radio_affiliation.clone()).is_some()
-        || trim_opt(payload.fluxer_id.clone()).is_some()
-        || trim_opt(payload.discord_id.clone()).is_some()
-        || trim_opt(payload.irc_id.clone()).is_some();
-
-    if !has_comm {
-        return Err(
-            "Provide at least one of callsign, DMR ID, radio affiliation, Fluxer ID, Discord ID, or IRC ID.",
-        );
-    }
+    len!(
+        "`organisation` must be at most 128 characters.",
+        payload.organisation,
+        128
+    );
+    len!("`role` must be at most 128 characters.", payload.role, 128);
+    len!(
+        "`note` must be at most 4096 characters.",
+        payload.note,
+        4096
+    );
+    len!(
+        "`badge_number` must be at most 64 characters.",
+        payload.badge_number,
+        64
+    );
 
     if let Some(id) = payload.dmr_id {
         if !(1..=16_777_215).contains(&id) {
@@ -267,6 +278,10 @@ pub async fn process_submission(
                 country: trim_opt(payload.country.clone()),
                 postal_code: trim_opt(payload.postal_code.clone()),
                 region: trim_opt(payload.region.clone()),
+                organisation: trim_opt(payload.organisation.clone()),
+                role: trim_opt(payload.role.clone()),
+                note: trim_opt(payload.note.clone()),
+                badge_number: trim_opt(payload.badge_number.clone()),
                 armored_key: parsed.armored.clone(),
                 expires_at,
             };
@@ -286,7 +301,10 @@ pub async fn process_submission(
               "street": pending.street,
               "country": pending.country,
               "postal_code": pending.postal_code,
-              "region": pending.region,
+              "organisation": pending.organisation,
+              "role": pending.role,
+              "note": pending.note,
+              "badge_number": pending.badge_number,
               "confirm_url": format!("{base}/confirm/{token}"),
               "reject_url": format!("{base}/reject/{token}"),
               "expires_hours": 72_u32,
@@ -324,6 +342,10 @@ pub async fn process_submission(
             country: trim_opt(payload.country),
             postal_code: trim_opt(payload.postal_code),
             region: trim_opt(payload.region),
+            organisation: trim_opt(payload.organisation),
+            role: trim_opt(payload.role),
+            note: trim_opt(payload.note),
+            badge_number: trim_opt(payload.badge_number),
             submitted_at: chrono::Utc::now().to_rfc3339(),
         },
     )
@@ -337,7 +359,6 @@ pub async fn process_submission(
 fn classify_submit_anyhow(e: anyhow::Error, api: bool) -> Response {
     let msg = e.to_string();
     let validation = msg.starts_with("Email")
-        || msg.starts_with("Provide at least")
         || msg.starts_with("DMR")
         || msg.starts_with("Callsign")
         || msg.contains("characters.")
@@ -550,11 +571,15 @@ mod tests {
             country: None,
             postal_code: None,
             region: None,
+            organisation: None,
+            role: None,
+            note: None,
+            badge_number: None,
         }
     }
 
     #[tokio::test]
-    async fn reject_missing_community_fields() {
+    async fn accept_registry_push_email_and_key_only() {
         let pool = pool_migrated().await;
         let tmpl = templates();
         let cfg = Arc::new(Config::test_local());
@@ -563,15 +588,19 @@ mod tests {
             fluxer_id: None,
             ..base_payload("solo@test.example", armored_cv25519("solo@test.example"))
         };
-        assert!(process_submission(
+        match process_submission(
             payload,
             &pool,
             cfg.as_ref(),
             &Mailer::noop_for_tests(),
-            &tmpl
+            &tmpl,
         )
         .await
-        .is_err());
+        .unwrap()
+        {
+            SubmitDecision::Accepted { .. } => {}
+            other => panic!("expected accepted minimal payload, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -643,6 +672,10 @@ mod tests {
                 country: None,
                 postal_code: None,
                 region: None,
+                organisation: None,
+                role: None,
+                note: None,
+                badge_number: None,
                 submitted_at: chrono::Utc::now().to_rfc3339(),
             },
         )
@@ -677,6 +710,10 @@ mod tests {
             country: None,
             postal_code: None,
             region: None,
+            organisation: None,
+            role: None,
+            note: None,
+            badge_number: None,
         };
 
         let r = process_submission(second, &pool, cfg.as_ref(), &mail, &tmpl)
@@ -731,6 +768,10 @@ mod tests {
                 country: None,
                 postal_code: None,
                 region: None,
+                organisation: None,
+                role: None,
+                note: None,
+                badge_number: None,
                 submitted_at: chrono::Utc::now().to_rfc3339(),
             },
         )

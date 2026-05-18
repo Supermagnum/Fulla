@@ -10,8 +10,10 @@ Fulla is a closed Galdralag hardware key registry backed by SQLite. It exposes a
 - [Build and install on Ubuntu](#build-and-install-on-ubuntu)
 - [Dependencies and packages](#dependencies-and-packages)
 - [Configuration overview](#configuration-overview)
+  - [Key listing and search](#key-listing-and-search)
 - [Network ports and firewall](#network-ports-and-firewall)
 - [Debugging and troubleshooting](#debugging-and-troubleshooting)
+- [Galdra compatibility](#galdra--galdralag-firmware-compatibility)
 - [Replication](#replication)
 - [Maintainer scope and support](#maintainer-scope-and-support)
 
@@ -104,6 +106,27 @@ Two layers matter for operators:
 | `[replication.mesh] sync_api_port` | Separate peer-sync listener (often **9443** in examples). Binds **`0.0.0.0`** in the binary; restrict with firewall rules. |
 
 Place TLS files where the service user can read them; lock down ownership (for example root / dedicated group).
+
+### Key listing and search
+
+The **`GET /keys`** endpoint and matching HTML listings support **combined filters** via query parameters. Multiple parameters are **`AND`**-ed together.
+
+| Parameter | Semantics |
+|-----------|-----------|
+| `email` | Case-insensitive **exact** match on stored email |
+| `fingerprint` | **Prefix** match on fingerprint (hex, whitespace stripped, uppercased prefix) |
+| `callsign` | Case-insensitive **exact** match |
+| `dmr_id` | **Exact** numeric match (`INTEGER`) |
+| `discord_id`, `irc_id`, `fluxer_id` | **Exact** match (after trim); suitable for identifiers stored as in the submission |
+| `first_name`, `last_name` | Case-insensitive **substring** (`instr(lower(column), lower(value))`; empty needle is ignored) |
+
+Pagination uses `page`, `per_page` (defaults: `1`, `25`, max `200` rows per page).
+
+**JSON note:** requesting keys by **`email` alone** (no other filters) preserves the legacy behaviour (`GET /keys?email=` with **`Accept: application/json`**) of returning bundled key JSON for tooling; add any other query field to route through the general filtered listing instead.
+
+### Galdra / Galdralag-firmware compatibility
+
+The [`galdra keyserver`](https://github.com/Supermagnum/Galdralag-firmware) subcommands **`push`** / **`fetch`** target this API: **`POST {base}/api/v1/keys`** with **`email`**, **`armored_public_key`**, and optional sidecar JSON fields (display name **`first_name`/`last_name`**, **`callsign`**, **`dmr_id`**, **`radio_affiliation`**, **`fluxer_id`/`discord_id`/`irc_id`**, postal **`street`/`country`/`postal_code`/`region`**, and **`organisation`**, **`role`**, **`note`**, **`badge_number`**). Fulla accepts minimal bodies (those two keys only). Response JSON uses **`accepted`**, **`pending_confirmation`**, or **`error`** as **`galdra`** parses them, including **`422`** with a machine-readable **`reason`**. **`GET /keys/{fingerprint}`** and **`GET /keys?email=...`** with **`Accept: application/json`** align with **`galdra keyserver fetch`** (singleton or array).
 
 ## Network ports and firewall
 

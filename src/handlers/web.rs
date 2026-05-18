@@ -7,6 +7,7 @@ use axum::{
 };
 
 use serde::{Deserialize, Serialize};
+use url::form_urlencoded::Serializer;
 
 use crate::db;
 use crate::models::{KeyFilter, KeyRecord};
@@ -22,11 +23,27 @@ pub fn accepts_json_ok(headers: &HeaderMap) -> bool {
 
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct KeyBrowseQuery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub callsign: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dmr_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discord_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub irc_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fluxer_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_page: Option<u32>,
     /// When set with `email` only and `Accept: application/json`, include revoked keys (default: active only, for device clients).
     #[serde(default)]
@@ -50,7 +67,21 @@ pub async fn key_list(
     let em = trim(&q.email);
     let fp = trim(&q.fingerprint);
     let cs = trim(&q.callsign);
-    let email_only = em.is_some() && fp.is_none() && cs.is_none() && q.dmr_id.is_none();
+    let discord = trim(&q.discord_id);
+    let irc = trim(&q.irc_id);
+    let fluxer = trim(&q.fluxer_id);
+    let first = trim(&q.first_name);
+    let last = trim(&q.last_name);
+
+    let email_only = em.is_some()
+        && fp.is_none()
+        && cs.is_none()
+        && q.dmr_id.is_none()
+        && discord.is_none()
+        && irc.is_none()
+        && fluxer.is_none()
+        && first.is_none()
+        && last.is_none();
 
     let page = q.page.unwrap_or(1).max(1);
     let per_page = q.per_page.unwrap_or(25).clamp(1, 200);
@@ -78,6 +109,7 @@ pub async fn key_list(
         let total = all.len() as i64;
         let off = ((page.saturating_sub(1)) as usize).saturating_mul(per_page as usize);
         let rows: Vec<KeyRecord> = all.into_iter().skip(off).take(per_page as usize).collect();
+        let (pager_prev, pager_next) = pager_query_strings(&q, page, per_page, total);
         let html = app
             .templates
             .render(
@@ -88,6 +120,8 @@ pub async fn key_list(
                     "per_page": per_page,
                     "total": total,
                     "query": q,
+                    "pager_qs_prev": pager_prev,
+                    "pager_qs_next": pager_next,
                 }),
             )
             .map_err(internal)?;
@@ -99,6 +133,11 @@ pub async fn key_list(
         fingerprint_prefix: fp.clone(),
         callsign: cs.clone(),
         dmr_id: q.dmr_id,
+        discord_id: discord.clone(),
+        irc_id: irc.clone(),
+        fluxer_id: fluxer.clone(),
+        first_name_contains: first.clone(),
+        last_name_contains: last.clone(),
     };
 
     let total = db::count_keys(&app.pool, &filter).await.map_err(internal)?;
@@ -110,6 +149,7 @@ pub async fn key_list(
         return Ok(Json(rows).into_response());
     }
 
+    let (pager_prev, pager_next) = pager_query_strings(&q, page, per_page, total);
     let html = app
         .templates
         .render(
@@ -120,6 +160,8 @@ pub async fn key_list(
                 "per_page": per_page,
                 "total": total,
                 "query": q,
+                "pager_qs_prev": pager_prev,
+                "pager_qs_next": pager_next,
             }),
         )
         .map_err(internal)?;
@@ -173,6 +215,49 @@ fn trim(s: &Option<String>) -> Option<String> {
         .map(|x| x.trim())
         .filter(|x| !x.is_empty())
         .map(|x| x.to_string())
+}
+
+fn append_trim(ser: &mut Serializer<'_, String>, key: &'static str, opt: &Option<String>) {
+    if let Some(s) = trim(opt) {
+        ser.append_pair(key, &s);
+    }
+}
+
+fn serialize_keys_browse_query(q: &KeyBrowseQuery, page: u32, per_page: u32) -> String {
+    let mut ser = Serializer::new(String::new());
+    append_trim(&mut ser, "email", &q.email);
+    append_trim(&mut ser, "fingerprint", &q.fingerprint);
+    append_trim(&mut ser, "callsign", &q.callsign);
+    if let Some(dm) = q.dmr_id {
+        ser.append_pair("dmr_id", &dm.to_string());
+    }
+    append_trim(&mut ser, "discord_id", &q.discord_id);
+    append_trim(&mut ser, "irc_id", &q.irc_id);
+    append_trim(&mut ser, "fluxer_id", &q.fluxer_id);
+    append_trim(&mut ser, "first_name", &q.first_name);
+    append_trim(&mut ser, "last_name", &q.last_name);
+    if q.include_revoked {
+        ser.append_pair("include_revoked", "true");
+    }
+    ser.append_pair("page", &page.to_string());
+    ser.append_pair("per_page", &per_page.to_string());
+    ser.finish()
+}
+
+fn pager_query_strings(q: &KeyBrowseQuery, page: u32, per_page: u32, total: i64) -> (String, String) {
+    let prev = if page > 1 {
+        serialize_keys_browse_query(q, page - 1, per_page)
+    } else {
+        String::new()
+    };
+
+    let next = if i64::from(page).saturating_mul(i64::from(per_page)) < total {
+        serialize_keys_browse_query(q, page + 1, per_page)
+    } else {
+        String::new()
+    };
+
+    (prev, next)
 }
 
 fn normalize_fingerprint(raw: &str) -> Option<String> {

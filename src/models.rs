@@ -33,6 +33,14 @@ pub struct KeyRecord {
     pub postal_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub organisation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub badge_number: Option<String>,
     pub submitted_at: String,
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -66,6 +74,10 @@ impl KeyRecord {
             country: row.country,
             postal_code: row.postal_code,
             region: row.region,
+            organisation: row.organisation,
+            role: row.role,
+            note: row.note,
+            badge_number: row.badge_number,
             submitted_at: row.submitted_at,
             status: row.status,
             revoked_at: row.revoked_at,
@@ -91,6 +103,10 @@ pub struct DbKeyRow {
     pub country: Option<String>,
     pub postal_code: Option<String>,
     pub region: Option<String>,
+    pub organisation: Option<String>,
+    pub role: Option<String>,
+    pub note: Option<String>,
+    pub badge_number: Option<String>,
     pub submitted_at: String,
     pub status: String,
     pub revoked_at: Option<String>,
@@ -114,6 +130,10 @@ pub struct NewKeyRecord {
     pub country: Option<String>,
     pub postal_code: Option<String>,
     pub region: Option<String>,
+    pub organisation: Option<String>,
+    pub role: Option<String>,
+    pub note: Option<String>,
+    pub badge_number: Option<String>,
     pub submitted_at: String,
 }
 
@@ -134,6 +154,10 @@ pub struct PendingSubmission {
     pub country: Option<String>,
     pub postal_code: Option<String>,
     pub region: Option<String>,
+    pub organisation: Option<String>,
+    pub role: Option<String>,
+    pub note: Option<String>,
+    pub badge_number: Option<String>,
     pub armored_key: String,
     pub expires_at: String,
 }
@@ -154,6 +178,10 @@ pub struct SubmitPayload {
     pub country: Option<String>,
     pub postal_code: Option<String>,
     pub region: Option<String>,
+    pub organisation: Option<String>,
+    pub role: Option<String>,
+    pub note: Option<String>,
+    pub badge_number: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -173,4 +201,9 @@ pub struct KeyFilter {
     pub fingerprint_prefix: Option<String>,
     pub callsign: Option<String>,
     pub dmr_id: Option<i64>,
+    pub discord_id: Option<String>,
+    pub irc_id: Option<String>,
+    pub fluxer_id: Option<String>,
+    pub first_name_contains: Option<String>,
+    pub last_name_contains: Option<String>,
 }
