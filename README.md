@@ -343,6 +343,9 @@ If both Litestream and SSH are enabled and both run, the first SSH sync is delay
 
 `replication.mesh.peers`, `replication.litestream`, and `replication.ssh` may set `dynamic_dns_host`. Immediately before each cycle Fulla resolves the hostname (`tokio::net::lookup_host`) and substitutes the literal token from the configured URL/host field with the resolved address so changing home IPs are handled transparently.
 
+Suggested dynamic dns provider: 
+deSEC (desec.io) — free, EU-based (Germany), run by a nonprofit-adjacent team, DNSSEC by default, open-source client tooling, no ads/tracking model. Good fit for a BSI/EU-aligned project like this one, and it's API-driven so scripting the update from a cron job or systemd timer is straightforward.
+
 ## Maintainer scope and support
 
 **Project maintainers may not be able to diagnose or fix problems in your deployment, your infrastructure, or third-party components** (CR-SQLite builds, Litestream object storage, SMTP providers, TLS certificates, firewalls, systemd units, or custom patches). They also may **not commit to repairing every defect** in this codebase on your schedule.
