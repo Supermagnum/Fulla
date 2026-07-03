@@ -1,0 +1,24 @@
+[package]
+name = "fulla-adversarial"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "fulla-adversarial"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full", "net", "io-util", "time"] }
+sequoia-openpgp = { version = "1", default-features = false, features = [
+    "compression-deflate",
+    "crypto-rust",
+    "allow-experimental-crypto",
+    "allow-variable-time-crypto",
+] }
+rand = "0.8"
+futures-util = "0.3"

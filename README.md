@@ -10,7 +10,10 @@ Fulla is a closed Galdralag hardware key registry backed by SQLite. It exposes a
 - [Build and install on Ubuntu](#build-and-install-on-ubuntu)
 - [Dependencies and packages](#dependencies-and-packages)
 - [Configuration overview](#configuration-overview)
+  - [Key submission and mailbox confirmation](#key-submission-and-mailbox-confirmation)
   - [Key listing and search](#key-listing-and-search)
+- [Security testing (Docker)](#security-testing-docker)
+- [Galdralag integration](#galdralag-integration)
 - [Network ports and firewall](#network-ports-and-firewall)
 - [Debugging and troubleshooting](#debugging-and-troubleshooting)
 - [Galdra compatibility](#galdra--galdralag-firmware-compatibility)
@@ -107,6 +110,17 @@ Two layers matter for operators:
 
 Place TLS files where the service user can read them; lock down ownership (for example root / dedicated group).
 
+### Key submission and mailbox confirmation
+
+Every new registration (`POST /submit`, `POST /api/v1/keys`) and every **replacement** of an existing email’s active fingerprint goes through the same **`pending_submissions`** flow:
+
+1. Fulla validates the OpenPGP material and stores a pending row (72-hour expiry).
+2. A confirmation email is sent to the **submitted mailbox** (first-time) or the address on file (replacement).
+3. The recipient follows **`GET /confirm/:token`** to publish the key as **`active`**, or **`GET /reject/:token`** to discard the pending row.
+4. Until confirmation, the key is **not** in `keys` and does not appear in search or fetch.
+
+Re-submitting the **same** fingerprint and armored material while the key is already active is **idempotent** and returns **`accepted`** without sending mail. Only one unexpired pending row is allowed per email at a time.
+
 ### Key listing and search
 
 The **`GET /keys`** endpoint and matching HTML listings support **combined filters** via query parameters. Multiple parameters are **`AND`**-ed together.
@@ -126,7 +140,24 @@ Pagination uses `page`, `per_page` (defaults: `1`, `25`, max `200` rows per page
 
 ### Galdra / Galdralag-firmware compatibility
 
-The [`galdra keyserver`](https://github.com/Supermagnum/Galdralag-firmware) subcommands **`push`** / **`fetch`** target this API: **`POST {base}/api/v1/keys`** with **`email`**, **`armored_public_key`**, and optional sidecar JSON fields (display name **`first_name`/`last_name`**, **`callsign`**, **`dmr_id`**, **`radio_affiliation`**, **`fluxer_id`/`discord_id`/`irc_id`**, postal **`street`/`country`/`postal_code`/`region`**, and **`organisation`**, **`role`**, **`note`**, **`badge_number`**). Fulla accepts minimal bodies (those two keys only). Response JSON uses **`accepted`**, **`pending_confirmation`**, or **`error`** as **`galdra`** parses them, including **`422`** with a machine-readable **`reason`**. **`GET /keys/{fingerprint}`** and **`GET /keys?email=...`** with **`Accept: application/json`** align with **`galdra keyserver fetch`** (singleton or array).
+The [`galdra keyserver`](https://github.com/Supermagnum/Galdralag-firmware) subcommands **`push`** / **`fetch`** target this API: **`POST {base}/api/v1/keys`** with **`email`**, **`armored_public_key`**, and optional sidecar JSON fields (display name **`first_name`/`last_name`**, **`callsign`**, **`dmr_id`**, **`radio_affiliation`**, **`fluxer_id`/`discord_id`/`irc_id`**, postal **`street`/`country`/`postal_code`/`region`**, and **`organisation`**, **`role`**, **`note`**, **`badge_number`**). Fulla accepts minimal bodies (those two keys only). A **first push** normally returns **`pending_confirmation`** (HTTP 202) until the mailbox owner confirms; **`accepted`** means the key is already active with identical material. Replacements for an email that already has a different active fingerprint also return **`pending_confirmation`**. Response JSON uses **`accepted`**, **`pending_confirmation`**, or **`error`** as **`galdra`** parses them, including **`422`** with a machine-readable **`reason`**. **`GET /keys/{fingerprint}`** and **`GET /keys?email=...`** with **`Accept: application/json`** align with **`galdra keyserver fetch`** (singleton or array) and only return **confirmed** active keys unless **`include_revoked`** is set on email-only JSON lookup.
+
+See **[docs/FULLA_INTEGRATION.md](docs/FULLA_INTEGRATION.md)** for TLS, deployment posture, MailHog workflow, and CLI UX gaps.
+
+## Security testing (Docker)
+
+A disposable **Fulla + MailHog** stack and an **adversarial HTTP client** live under [`docker/`](docker/README.md):
+
+```bash
+cd docker && docker compose up -d --build
+./docker/run-adversarial.sh   # from repo root
+```
+
+Reset between runs: `docker compose down -v && docker compose up -d --build`. The adversarial crate is [`adversarial-tests/`](adversarial-tests/).
+
+## Galdralag integration
+
+Client-facing integration detail (auth model, config, confirmation flow, worked example): **[docs/FULLA_INTEGRATION.md](docs/FULLA_INTEGRATION.md)**. Link that document from the Galdralag-firmware repo when documenting `galdra keyserver`.
 
 ## Network ports and firewall
 

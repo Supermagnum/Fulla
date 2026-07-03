@@ -18,6 +18,7 @@ pub struct Config {
     pub keyserver_smtp_user: String,
     pub keyserver_smtp_password: String,
     pub keyserver_smtp_from: String,
+    pub keyserver_smtp_tls: bool,
     pub keyserver_rate_limit_submissions: u32,
     pub replication: ReplicationConfig,
 }
@@ -161,6 +162,7 @@ impl Config {
         let keyserver_smtp_user = req_var("KEYSERVER_SMTP_USER")?;
         let keyserver_smtp_password = req_var("KEYSERVER_SMTP_PASSWORD")?;
         let keyserver_smtp_from = req_var("KEYSERVER_SMTP_FROM")?;
+        let keyserver_smtp_tls = parse_bool("KEYSERVER_SMTP_TLS", true);
         let mut keyserver_rate_limit_submissions =
             parse_u32("KEYSERVER_RATE_LIMIT_SUBMISSIONS").unwrap_or(5);
         if keyserver_rate_limit_submissions == 0 {
@@ -180,6 +182,7 @@ impl Config {
             keyserver_smtp_user,
             keyserver_smtp_password,
             keyserver_smtp_from,
+            keyserver_smtp_tls,
             keyserver_rate_limit_submissions,
             replication,
         })
@@ -260,6 +263,16 @@ fn parse_u32(name: &'static str) -> Option<u32> {
     std::env::var(name).ok().and_then(|v| v.trim().parse().ok())
 }
 
+fn parse_bool(name: &'static str, default: bool) -> bool {
+    match std::env::var(name) {
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => default,
+    }
+}
+
 #[cfg(test)]
 impl Config {
     pub fn test_local() -> Self {
@@ -274,6 +287,7 @@ impl Config {
             keyserver_smtp_user: "test".into(),
             keyserver_smtp_password: "test".into(),
             keyserver_smtp_from: "fulla-test@localhost".into(),
+            keyserver_smtp_tls: true,
             keyserver_rate_limit_submissions: 1000,
             replication: ReplicationConfig::default(),
         }

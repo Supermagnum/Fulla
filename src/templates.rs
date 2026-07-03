@@ -25,6 +25,7 @@ impl WebTemplates {
             ("submit_pending", "submit_pending.html"),
             ("submit_accepted", "submit_accepted.html"),
             ("email_new_key", "email/new_key_notification.txt"),
+            ("email_first_signup", "email/first_signup_notification.txt"),
         ];
 
         let mut env = Environment::new();

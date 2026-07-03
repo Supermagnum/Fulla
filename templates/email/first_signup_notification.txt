@@ -1,0 +1,17 @@
+A Galdralag key registry entry has been submitted for your email address.
+
+Requested fingerprint: {{ new_fingerprint }}
+{% if callsign %}Callsign    : {{ callsign }}
+{% endif %}{% if dmr_id %}DMR ID      : {{ dmr_id }}
+{% endif %}{% if radio_affiliation %}Affiliation : {{ radio_affiliation }}
+{% endif %}{% if organisation %}Organisation : {{ organisation }}
+{% endif %}{% if role %}Role        : {{ role }}
+{% endif %}{% if badge_number %}Badge       : {{ badge_number }}
+{% endif %}{% if note %}Note        : {{ note }}
+{% endif %}
+
+To confirm this registration: {{ confirm_url }}
+To reject this registration : {{ reject_url }}
+
+This link expires in {{ expires_hours }} hours.
+If you did not request this registration, click reject.

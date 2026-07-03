@@ -12,7 +12,7 @@ use sqlx::SqlitePool;
 use crate::db;
 use crate::handlers::normalize_base_url;
 use crate::mail::Mailer;
-use crate::models::{NewKeyRecord, PendingSubmission, PushResponseJson, SubmitPayload};
+use crate::models::{PendingSubmission, PushResponseJson, SubmitPayload};
 use crate::openpgp::parse_and_validate;
 use crate::templates::WebTemplates;
 use crate::AppState;
@@ -79,8 +79,146 @@ impl SubmitFormFields {
 
 #[derive(Debug)]
 pub enum SubmitDecision {
+    /// Key is already active with identical material (idempotent re-submit).
     Accepted { fingerprint: String },
-    DuplicatePending,
+    /// Confirmation email sent; row is in `pending_submissions`.
+    PendingConfirmation,
+}
+
+fn pending_expires_at_rfc3339() -> String {
+    chrono::Utc::now()
+        .checked_add_signed(chrono::Duration::hours(72))
+        .expect("chrono expiry")
+        .to_rfc3339()
+}
+
+fn build_pending_submission(
+    token: String,
+    parsed: &crate::openpgp::ParsedCert,
+    payload: &SubmitPayload,
+    email_norm: &str,
+) -> PendingSubmission {
+    PendingSubmission {
+        token,
+        new_fingerprint: parsed.fingerprint.clone(),
+        email: email_norm.to_string(),
+        first_name: trim_opt(payload.first_name.clone()),
+        last_name: trim_opt(payload.last_name.clone()),
+        fluxer_id: trim_opt(payload.fluxer_id.clone()),
+        discord_id: trim_opt(payload.discord_id.clone()),
+        irc_id: trim_opt(payload.irc_id.clone()),
+        callsign: trim_opt(payload.callsign.clone()),
+        dmr_id: payload.dmr_id.map(|x| x as i64),
+        radio_affiliation: trim_opt(payload.radio_affiliation.clone()),
+        street: trim_opt(payload.street.clone()),
+        country: trim_opt(payload.country.clone()),
+        postal_code: trim_opt(payload.postal_code.clone()),
+        region: trim_opt(payload.region.clone()),
+        organisation: trim_opt(payload.organisation.clone()),
+        role: trim_opt(payload.role.clone()),
+        note: trim_opt(payload.note.clone()),
+        badge_number: trim_opt(payload.badge_number.clone()),
+        armored_key: parsed.armored.clone(),
+        expires_at: pending_expires_at_rfc3339(),
+    }
+}
+
+fn pending_sidecar_json(pending: &PendingSubmission) -> serde_json::Value {
+    serde_json::json!({
+      "callsign": pending.callsign,
+      "dmr_id": pending.dmr_id,
+      "radio_affiliation": pending.radio_affiliation,
+      "fluxer_id": pending.fluxer_id,
+      "discord_id": pending.discord_id,
+      "irc_id": pending.irc_id,
+      "street": pending.street,
+      "country": pending.country,
+      "postal_code": pending.postal_code,
+      "region": pending.region,
+      "organisation": pending.organisation,
+      "role": pending.role,
+      "note": pending.note,
+      "badge_number": pending.badge_number,
+    })
+}
+
+enum PendingMailKind<'a> {
+    FirstSignup,
+    Replacement { old_fingerprint: &'a str },
+}
+
+async fn enqueue_pending_confirmation(
+    pool: &SqlitePool,
+    cfg: &crate::config::Config,
+    mailer: &Mailer,
+    tmpl: &WebTemplates,
+    pending: PendingSubmission,
+    kind: PendingMailKind<'_>,
+) -> Result<(), anyhow::Error> {
+    if db::has_pending_for_email(pool, &pending.email).await? {
+        anyhow::bail!("A confirmation is already pending for this email address.");
+    }
+
+    db::insert_pending(pool, &pending).await?;
+
+    let token = pending.token.clone();
+    let base = normalize_base_url(&cfg.keyserver_base_url);
+    let sidecar = pending_sidecar_json(&pending);
+    let confirm_url = format!("{base}/confirm/{token}");
+    let reject_url = format!("{base}/reject/{token}");
+
+    let (template, subject, ctx) = match kind {
+        PendingMailKind::FirstSignup => {
+            let mut ctx = sidecar.as_object().cloned().unwrap_or_default();
+            ctx.insert(
+                "new_fingerprint".into(),
+                serde_json::Value::String(pending.new_fingerprint.clone()),
+            );
+            ctx.insert(
+                "confirm_url".into(),
+                serde_json::Value::String(confirm_url),
+            );
+            ctx.insert(
+                "reject_url".into(),
+                serde_json::Value::String(reject_url),
+            );
+            ctx.insert("expires_hours".into(), serde_json::json!(72_u32));
+            (
+                "email_first_signup",
+                "Galdralag key registry: confirm registration",
+                ctx,
+            )
+        }
+        PendingMailKind::Replacement { old_fingerprint } => {
+            let mut ctx = sidecar.as_object().cloned().unwrap_or_default();
+            ctx.insert(
+                "old_fingerprint".into(),
+                serde_json::Value::String(old_fingerprint.to_string()),
+            );
+            ctx.insert(
+                "new_fingerprint".into(),
+                serde_json::Value::String(pending.new_fingerprint.clone()),
+            );
+            ctx.insert(
+                "confirm_url".into(),
+                serde_json::Value::String(confirm_url),
+            );
+            ctx.insert(
+                "reject_url".into(),
+                serde_json::Value::String(reject_url),
+            );
+            ctx.insert("expires_hours".into(), serde_json::json!(72_u32));
+            (
+                "email_new_key",
+                "Galdralag key registry: confirm key replacement",
+                ctx,
+            )
+        }
+    };
+
+    let body = tmpl.render(template, serde_json::Value::Object(ctx))?;
+    mailer.send_plain(&pending.email, subject, &body).await?;
+    Ok(())
 }
 
 fn trim_opt(s: Option<String>) -> Option<String> {
@@ -257,103 +395,35 @@ pub async fn process_submission(
     if let Some(existing) = by_email.first() {
         if existing.fingerprint != parsed.fingerprint {
             let token = random_token_64_hex();
-            let expires_at = chrono::Utc::now()
-                .checked_add_signed(chrono::Duration::hours(72))
-                .expect("chrono expiry")
-                .to_rfc3339();
-
-            let pending = PendingSubmission {
-                token: token.clone(),
-                new_fingerprint: parsed.fingerprint.clone(),
-                email: email_norm.clone(),
-                first_name: trim_opt(payload.first_name.clone()),
-                last_name: trim_opt(payload.last_name.clone()),
-                fluxer_id: trim_opt(payload.fluxer_id.clone()),
-                discord_id: trim_opt(payload.discord_id.clone()),
-                irc_id: trim_opt(payload.irc_id.clone()),
-                callsign: trim_opt(payload.callsign.clone()),
-                dmr_id: payload.dmr_id.map(|x| x as i64),
-                radio_affiliation: trim_opt(payload.radio_affiliation.clone()),
-                street: trim_opt(payload.street.clone()),
-                country: trim_opt(payload.country.clone()),
-                postal_code: trim_opt(payload.postal_code.clone()),
-                region: trim_opt(payload.region.clone()),
-                organisation: trim_opt(payload.organisation.clone()),
-                role: trim_opt(payload.role.clone()),
-                note: trim_opt(payload.note.clone()),
-                badge_number: trim_opt(payload.badge_number.clone()),
-                armored_key: parsed.armored.clone(),
-                expires_at,
-            };
-
-            db::insert_pending(pool, &pending).await?;
-
-            let base = normalize_base_url(&cfg.keyserver_base_url);
-            let ctx = serde_json::json!({
-              "old_fingerprint": existing.fingerprint,
-              "new_fingerprint": parsed.fingerprint,
-              "callsign": pending.callsign,
-              "dmr_id": pending.dmr_id,
-              "radio_affiliation": pending.radio_affiliation,
-              "fluxer_id": pending.fluxer_id,
-              "discord_id": pending.discord_id,
-              "irc_id": pending.irc_id,
-              "street": pending.street,
-              "country": pending.country,
-              "postal_code": pending.postal_code,
-              "organisation": pending.organisation,
-              "role": pending.role,
-              "note": pending.note,
-              "badge_number": pending.badge_number,
-              "confirm_url": format!("{base}/confirm/{token}"),
-              "reject_url": format!("{base}/reject/{token}"),
-              "expires_hours": 72_u32,
-            });
-
-            let body = tmpl.render("email_new_key", ctx)?;
-
-            mailer
-                .send_plain(
-                    &existing.email,
-                    "Galdralag key registry: confirm key replacement",
-                    &body,
-                )
-                .await?;
-
-            return Ok(SubmitDecision::DuplicatePending);
+            let pending = build_pending_submission(token, &parsed, &payload, &email_norm);
+            enqueue_pending_confirmation(
+                pool,
+                cfg,
+                mailer,
+                tmpl,
+                pending,
+                PendingMailKind::Replacement {
+                    old_fingerprint: &existing.fingerprint,
+                },
+            )
+            .await?;
+            return Ok(SubmitDecision::PendingConfirmation);
         }
     }
 
-    db::insert_key(
+    let token = random_token_64_hex();
+    let pending = build_pending_submission(token, &parsed, &payload, &email_norm);
+    enqueue_pending_confirmation(
         pool,
-        &NewKeyRecord {
-            fingerprint: parsed.fingerprint.clone(),
-            armored_key: parsed.armored,
-            email: email_norm.clone(),
-            first_name: trim_opt(payload.first_name),
-            last_name: trim_opt(payload.last_name),
-            fluxer_id: trim_opt(payload.fluxer_id),
-            discord_id: trim_opt(payload.discord_id),
-            irc_id: trim_opt(payload.irc_id),
-            callsign: trim_opt(payload.callsign).map(|c| c.to_ascii_uppercase()),
-            dmr_id: payload.dmr_id,
-            radio_affiliation: trim_opt(payload.radio_affiliation),
-            street: trim_opt(payload.street),
-            country: trim_opt(payload.country),
-            postal_code: trim_opt(payload.postal_code),
-            region: trim_opt(payload.region),
-            organisation: trim_opt(payload.organisation),
-            role: trim_opt(payload.role),
-            note: trim_opt(payload.note),
-            badge_number: trim_opt(payload.badge_number),
-            submitted_at: chrono::Utc::now().to_rfc3339(),
-        },
+        cfg,
+        mailer,
+        tmpl,
+        pending,
+        PendingMailKind::FirstSignup,
     )
     .await?;
 
-    Ok(SubmitDecision::Accepted {
-        fingerprint: parsed.fingerprint,
-    })
+    Ok(SubmitDecision::PendingConfirmation)
 }
 
 fn classify_submit_anyhow(e: anyhow::Error, api: bool) -> Response {
@@ -370,7 +440,8 @@ fn classify_submit_anyhow(e: anyhow::Error, api: bool) -> Response {
         || msg.contains("does not match any User ID")
         || msg.contains("already revoked")
         || msg.contains("uncertain revocation")
-        || msg.contains("Key material exceeds");
+        || msg.contains("Key material exceeds")
+        || msg.contains("confirmation is already pending");
 
     let fp_conflict = msg.contains("fingerprint already has");
 
@@ -455,10 +526,10 @@ pub async fn handle_form(
                     .into_response(),
             }
         }
-        Ok(SubmitDecision::DuplicatePending) => match app.templates.render(
+        Ok(SubmitDecision::PendingConfirmation) => match app.templates.render(
             "submit_pending",
             PendingPage {
-                message: "Confirmation email sent to address on file.".into(),
+                message: "Confirmation email sent to the submitted address.".into(),
             },
         ) {
             Ok(html) => (StatusCode::OK, Html(html)).into_response(),
@@ -493,12 +564,12 @@ pub async fn handle_api(State(app): State<AppState>, Json(mut p): Json<SubmitPay
             }),
         )
             .into_response(),
-        Ok(SubmitDecision::DuplicatePending) => (
+        Ok(SubmitDecision::PendingConfirmation) => (
             StatusCode::ACCEPTED,
             Json(PushResponseJson {
                 status: "pending_confirmation".into(),
                 fingerprint: None,
-                message: Some("Confirmation email sent to address on file.".into()),
+                message: Some("Confirmation email sent to the submitted address.".into()),
                 reason: None,
             }),
         )
@@ -520,10 +591,11 @@ mod tests {
     use super::{process_submission, SubmitDecision, SubmitPayload};
     use crate::config::Config;
     use crate::db;
+    use crate::handlers::confirm;
     use crate::mail::Mailer;
-    use crate::models::NewKeyRecord;
     use crate::openpgp::parse_and_validate;
     use crate::templates::WebTemplates;
+    use crate::AppState;
 
     async fn pool_migrated() -> sqlx::SqlitePool {
         let pool = SqlitePoolOptions::new()
@@ -578,6 +650,67 @@ mod tests {
         }
     }
 
+    fn test_app(pool: sqlx::SqlitePool) -> AppState {
+        AppState {
+            pool,
+            config: Arc::new(Config::test_local()),
+            mailer: Arc::new(Mailer::noop_for_tests()),
+            templates: Arc::new(templates()),
+            rate_limit: crate::rate_limit::MutationRateLimit::new(999),
+        }
+    }
+
+    async fn pending_token_for_email(pool: &sqlx::SqlitePool, email: &str) -> String {
+        sqlx::query_scalar("SELECT token FROM pending_submissions WHERE LOWER(email) = LOWER(?)")
+            .bind(email)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn first_time_submission_goes_to_pending_not_keys() {
+        let pool = pool_migrated().await;
+        let tmpl = templates();
+        let cfg = Arc::new(Config::test_local());
+        let em = "first@test.example";
+        let payload = SubmitPayload {
+            callsign: None,
+            ..base_payload(em, armored_cv25519(em))
+        };
+        assert!(matches!(
+            process_submission(
+                payload,
+                &pool,
+                cfg.as_ref(),
+                &Mailer::noop_for_tests(),
+                &tmpl,
+            )
+            .await
+            .unwrap(),
+            SubmitDecision::PendingConfirmation
+        ));
+
+        let n_keys: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM keys")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n_keys, 0);
+
+        let n_pending: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pending_submissions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n_pending, 1);
+
+        assert!(
+            db::get_active_keys_by_email(&pool, em)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     #[tokio::test]
     async fn accept_registry_push_email_and_key_only() {
         let pool = pool_migrated().await;
@@ -588,19 +721,18 @@ mod tests {
             fluxer_id: None,
             ..base_payload("solo@test.example", armored_cv25519("solo@test.example"))
         };
-        match process_submission(
-            payload,
-            &pool,
-            cfg.as_ref(),
-            &Mailer::noop_for_tests(),
-            &tmpl,
-        )
-        .await
-        .unwrap()
-        {
-            SubmitDecision::Accepted { .. } => {}
-            other => panic!("expected accepted minimal payload, got {other:?}"),
-        }
+        assert!(matches!(
+            process_submission(
+                payload,
+                &pool,
+                cfg.as_ref(),
+                &Mailer::noop_for_tests(),
+                &tmpl,
+            )
+            .await
+            .unwrap(),
+            SubmitDecision::PendingConfirmation
+        ));
     }
 
     #[tokio::test]
@@ -623,21 +755,42 @@ mod tests {
     #[tokio::test]
     async fn idempotent_repeat_submission_same_key() {
         let pool = pool_migrated().await;
-        let tmpl = templates();
-        let cfg = Arc::new(Config::test_local());
+        let app = test_app(pool.clone());
         let mail = Mailer::noop_for_tests();
         let em = "idempo@test.example";
         let arm = armored_cv25519(em);
         let p = base_payload(em, arm.clone());
-        let r = process_submission(p.clone(), &pool, cfg.as_ref(), &mail, &tmpl)
+        assert!(matches!(
+            process_submission(
+                p.clone(),
+                &pool,
+                app.config.as_ref(),
+                &mail,
+                app.templates.as_ref(),
+            )
+            .await
+            .unwrap(),
+            SubmitDecision::PendingConfirmation
+        ));
+
+        let token = pending_token_for_email(&pool, em).await;
+        confirm::run_confirm(&app, &token).await.unwrap();
+
+        let r = process_submission(p, &pool, app.config.as_ref(), &mail, app.templates.as_ref())
             .await
             .unwrap();
         let SubmitDecision::Accepted { fingerprint } = r else {
-            panic!("expected accepted");
+            panic!("expected accepted after confirm");
         };
-        match process_submission(p, &pool, cfg.as_ref(), &mail, &tmpl)
-            .await
-            .unwrap()
+        match process_submission(
+            base_payload(em, arm),
+            &pool,
+            app.config.as_ref(),
+            &mail,
+            app.templates.as_ref(),
+        )
+        .await
+        .unwrap()
         {
             SubmitDecision::Accepted { fingerprint: fp2 } => assert_eq!(fingerprint, fp2),
             _ => panic!("expected accepted"),
@@ -646,6 +799,8 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_identity_sends_stub_pending_mail() {
+        use crate::models::NewKeyRecord;
+
         let pool = pool_migrated().await;
         let tmpl = templates();
         let cfg = Arc::new(Config::test_local());
@@ -719,7 +874,7 @@ mod tests {
         let r = process_submission(second, &pool, cfg.as_ref(), &mail, &tmpl)
             .await
             .unwrap();
-        assert!(matches!(r, SubmitDecision::DuplicatePending));
+        assert!(matches!(r, SubmitDecision::PendingConfirmation));
 
         let n_pending: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pending_submissions")
             .fetch_one(&pool)
@@ -729,20 +884,65 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fresh_insert_accepted() {
+    async fn fresh_submission_is_pending_until_confirm() {
+        let pool = pool_migrated().await;
+        let app = test_app(pool.clone());
+        let em = "fresh@test.example";
+        let p = base_payload(em, armored_cv25519(em));
+        assert!(matches!(
+            process_submission(
+                p,
+                &pool,
+                app.config.as_ref(),
+                &Mailer::noop_for_tests(),
+                app.templates.as_ref(),
+            )
+            .await
+            .unwrap(),
+            SubmitDecision::PendingConfirmation
+        ));
+        assert!(
+            db::get_active_keys_by_email(&pool, em)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn second_submission_while_pending_is_rejected() {
         let pool = pool_migrated().await;
         let tmpl = templates();
         let cfg = Arc::new(Config::test_local());
-        let em = "fresh@test.example";
-        let p = base_payload(em, armored_cv25519(em));
-        let r = process_submission(p, &pool, cfg.as_ref(), &Mailer::noop_for_tests(), &tmpl)
-            .await
-            .unwrap();
-        assert!(matches!(r, SubmitDecision::Accepted { .. }));
+        let mail = Mailer::noop_for_tests();
+        let em = "pending-block@test.example";
+        let arm = armored_cv25519(em);
+        process_submission(
+            base_payload(em, arm.clone()),
+            &pool,
+            cfg.as_ref(),
+            &mail,
+            &tmpl,
+        )
+        .await
+        .unwrap();
+
+        let err = process_submission(
+            base_payload(em, arm),
+            &pool,
+            cfg.as_ref(),
+            &mail,
+            &tmpl,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("confirmation is already pending"));
     }
 
     #[tokio::test]
     async fn active_fingerprint_storage_mismatch_errors() {
+        use crate::models::NewKeyRecord;
+
         let pool = pool_migrated().await;
         let tmpl = templates();
         let cfg = Arc::new(Config::test_local());

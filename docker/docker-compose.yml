@@ -1,0 +1,23 @@
+# Disposable Fulla + MailHog stack for confirmation-flow and adversarial testing.
+# Reset: docker compose down -v && docker compose up -d --build
+services:
+  mailhog:
+    image: docker.io/mailhog/mailhog:v1.0.1
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+
+  fulla:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8080:8080"
+    env_file:
+      - fulla.env
+    volumes:
+      - ./data:/data
+    depends_on:
+      - mailhog
+
+# Bind-mount ./data (see docker/README.md reset). Named volume optional for Docker Engine.

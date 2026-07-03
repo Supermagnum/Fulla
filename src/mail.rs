@@ -28,22 +28,35 @@ impl Mailer {
             .parse()
             .context("KEYSERVER_SMTP_FROM is not a valid mailbox")?;
 
-        let creds = Credentials::new(
-            config.keyserver_smtp_user.clone(),
-            config.keyserver_smtp_password.clone(),
-        );
-
-        let relay_builder = AsyncSmtpTransport::<Tokio1Executor>::relay(
-            &config.keyserver_smtp_host,
-        )
-        .with_context(|| format!("Invalid SMTP relay host `{}`", config.keyserver_smtp_host))?;
-
-        let relay = Box::new(
-            relay_builder
-                .credentials(creds)
+        let relay: Box<AsyncSmtpTransport<Tokio1Executor>> = if config.keyserver_smtp_tls {
+            let creds = Credentials::new(
+                config.keyserver_smtp_user.clone(),
+                config.keyserver_smtp_password.clone(),
+            );
+            let relay_builder = AsyncSmtpTransport::<Tokio1Executor>::relay(
+                &config.keyserver_smtp_host,
+            )
+            .with_context(|| {
+                format!(
+                    "Invalid SMTP relay host `{}`",
+                    config.keyserver_smtp_host
+                )
+            })?;
+            Box::new(
+                relay_builder
+                    .credentials(creds)
+                    .port(config.keyserver_smtp_port)
+                    .build(),
+            )
+        } else {
+            Box::new(
+                AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(
+                    config.keyserver_smtp_host.clone(),
+                )
                 .port(config.keyserver_smtp_port)
                 .build(),
-        );
+            )
+        };
 
         Ok(Mailer {
             inner: MailerInner::Smtp { mx: from, relay },

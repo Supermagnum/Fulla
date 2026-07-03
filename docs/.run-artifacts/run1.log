@@ -1,0 +1,31 @@
+=== RUN 1 (stack already up) ===
+   Compiling fulla-adversarial v0.1.0 (/mnt/2e9a1e9f-2097-408c-ab9a-a01b32f11d28/github-projects/Fulla/adversarial-tests)
+    Finished `release` profile [optimized] target(s) in 1.40s
+     Running `/tmp/cursor-sandbox-cache/e2c35a13f5f72aaa9279fb6cf80b908e/cargo-target/release/fulla-adversarial`
+
+## Adversarial test results
+
+| Category | Test | Result | Detail |
+|----------|------|--------|--------|
+| malformed | oversized_request_body | PASS | HTTP 413 Payload Too Large |
+| malformed | bad_openpgp | PASS | HTTP 422 with reason |
+| malformed | oversized_note_field | PASS | HTTP 422 |
+| malformed | invalid_utf8_json | PASS | HTTP 400 Bad Request |
+| malformed | fingerprint_path_short | PASS | HTTP 400 |
+| malformed | fingerprint_path_non_hex | PASS | HTTP 400 |
+| malformed | fingerprint_path_traversal | PASS | HTTP 404 |
+| malformed | fingerprint_path_sqli | PASS | HTTP 400 |
+| rate_limit | email_case_pending_guard | FINDING | first submit HTTP 500 Internal Server Error |
+| rate_limit | mutate_per_ip_hourly | PASS | 7th submit returned HTTP 429 (limit=5 in docker/fulla.env) |
+| rate_limit | read_side_unlimited | KNOWN_GAP | 40 rapid GET /keys returned no 429 (documented gap) |
+| identity | email_case_pending_setup | FINDING | first submit HTTP 429 Too Many Requests |
+| automated | json_fuzz_0 | PASS | HTTP 429 Too Many Requests |
+| automated | json_fuzz_1 | PASS | HTTP 429 Too Many Requests |
+| automated | json_fuzz_2 | PASS | HTTP 429 Too Many Requests |
+| automated | json_fuzz_3 | PASS | HTTP 429 Too Many Requests |
+| automated | search_revoked_filter_gap | KNOWN_GAP | multi-filter GET /keys has no active-only filter; revoked rows appear when present (prior investigation) |
+| automated | slow_partial_post | PASS | connection closed or completed within 8.001411885s |
+| tokens | confirm_flow_setup | FINDING | submit HTTP 429 Too Many Requests |
+
+Summary: 19 tests, 3 findings, 2 known gaps
+exit=0

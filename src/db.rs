@@ -173,6 +173,19 @@ pub async fn insert_pending(pool: &SqlitePool, pending: &PendingSubmission) -> R
     Ok(())
 }
 
+/// Whether an unexpired pending row exists for this email (case-insensitive).
+pub async fn has_pending_for_email(pool: &SqlitePool, email: &str) -> Result<bool> {
+    let n: i64 = sqlx::query_scalar(
+        r#"SELECT COUNT(*) FROM pending_submissions
+           WHERE LOWER(email) = LOWER(?)
+             AND expires_at >= datetime('now')"#,
+    )
+    .bind(email)
+    .fetch_one(pool)
+    .await?;
+    Ok(n > 0)
+}
+
 pub async fn get_pending(pool: &SqlitePool, token: &str) -> Result<Option<PendingSubmission>> {
     let row = sqlx::query_as::<_, PendingSubmission>(
         r#"SELECT token, new_fingerprint, email, first_name, last_name,

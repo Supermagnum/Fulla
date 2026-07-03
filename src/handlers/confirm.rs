@@ -1,4 +1,4 @@
-//! Duplicate-identity confirmation endpoints and pending cleanup.
+//! Mailbox confirmation endpoints (first-time registration and key replacement).
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -64,12 +64,13 @@ pub async fn handle_reject(
     .await
 }
 
-enum ConfirmError {
+#[derive(Debug)]
+pub(crate) enum ConfirmError {
     Gone,
     Internal(anyhow::Error),
 }
 
-async fn run_confirm(app: &AppState, token: &str) -> Result<(), ConfirmError> {
+pub(crate) async fn run_confirm(app: &AppState, token: &str) -> Result<(), ConfirmError> {
     let pending = db::get_pending(&app.pool, token)
         .await
         .map_err(ConfirmError::Internal)?;
@@ -91,14 +92,11 @@ async fn run_confirm(app: &AppState, token: &str) -> Result<(), ConfirmError> {
     let active_old = db::get_active_keys_by_email(&app.pool, &p.email)
         .await
         .map_err(ConfirmError::Internal)?;
-    let Some(old_row) = active_old.first() else {
-        let _ = db::delete_pending(&app.pool, token).await;
-        return Err(ConfirmError::Gone);
-    };
-
-    db::revoke_key(&app.pool, &old_row.fingerprint, Some("superseded"))
-        .await
-        .map_err(ConfirmError::Internal)?;
+    if let Some(old_row) = active_old.first() {
+        db::revoke_key(&app.pool, &old_row.fingerprint, Some("superseded"))
+            .await
+            .map_err(ConfirmError::Internal)?;
+    }
 
     let dmr_u = p.dmr_id.and_then(|i| {
         let u = u32::try_from(i).ok()?;
@@ -195,6 +193,206 @@ async fn internal() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn first_time_confirm_promotes_without_revoke() {
+        use std::sync::Arc;
+
+        use sequoia_openpgp::armor;
+        use sequoia_openpgp::cert::CertBuilder;
+        use sequoia_openpgp::cert::CipherSuite;
+        use sequoia_openpgp::serialize::Serialize as PgpSerialize;
+
+        use crate::models::PendingSubmission;
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let email = "newbie@test.example";
+        let cert = CertBuilder::new()
+            .set_cipher_suite(CipherSuite::Cv25519)
+            .add_userid(format!("T <{email}>"))
+            .add_signing_subkey()
+            .generate()
+            .unwrap()
+            .0;
+        let mut buf = Vec::new();
+        let mut w = armor::Writer::new(&mut buf, armor::Kind::PublicKey).unwrap();
+        cert.serialize(&mut w).unwrap();
+        w.finalize().unwrap();
+        let armored = String::from_utf8(buf).unwrap();
+        let fp = cert.fingerprint().to_hex();
+
+        let token = "a".repeat(64);
+        let expires = chrono::Utc::now()
+            .checked_add_signed(chrono::Duration::hours(24))
+            .unwrap()
+            .to_rfc3339();
+
+        db::insert_pending(
+            &pool,
+            &PendingSubmission {
+                token: token.clone(),
+                new_fingerprint: fp.clone(),
+                email: email.into(),
+                first_name: None,
+                last_name: None,
+                fluxer_id: None,
+                discord_id: None,
+                irc_id: None,
+                callsign: Some("LB9NEW".into()),
+                dmr_id: None,
+                radio_affiliation: None,
+                street: None,
+                country: None,
+                postal_code: None,
+                region: None,
+                organisation: None,
+                role: None,
+                note: None,
+                badge_number: None,
+                armored_key: armored,
+                expires_at: expires,
+            },
+        )
+        .await
+        .unwrap();
+
+        let app = crate::AppState {
+            pool: pool.clone(),
+            config: Arc::new(crate::config::Config::test_local()),
+            mailer: Arc::new(crate::mail::Mailer::noop_for_tests()),
+            templates: Arc::new(
+                crate::templates::WebTemplates::load_from_dir(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("templates"),
+                )
+                .unwrap(),
+            ),
+            rate_limit: crate::rate_limit::MutationRateLimit::new(999),
+        };
+
+        run_confirm(&app, &token).await.unwrap();
+
+        let active = db::get_active_keys_by_email(&pool, "newbie@test.example")
+            .await
+            .unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].fingerprint, fp);
+        assert_eq!(active[0].status, "active");
+
+        let revoked: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM keys WHERE status = 'revoked'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(revoked, 0);
+        assert!(db::get_pending(&pool, &token).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn first_time_reject_deletes_pending_only() {
+        use crate::models::PendingSubmission;
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let token = "b".repeat(64);
+        db::insert_pending(
+            &pool,
+            &PendingSubmission {
+                token: token.clone(),
+                new_fingerprint: "ABCDEF0123456789ABCDEF0123456789ABCDEF01".into(),
+                email: "reject@test.example".into(),
+                first_name: None,
+                last_name: None,
+                fluxer_id: None,
+                discord_id: None,
+                irc_id: None,
+                callsign: None,
+                dmr_id: None,
+                radio_affiliation: None,
+                street: None,
+                country: None,
+                postal_code: None,
+                region: None,
+                organisation: None,
+                role: None,
+                note: None,
+                badge_number: None,
+                armored_key: "-----BEGIN stub-----".into(),
+                expires_at: chrono::Utc::now()
+                    .checked_add_signed(chrono::Duration::hours(1))
+                    .unwrap()
+                    .to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        db::delete_pending(&pool, &token).await.unwrap();
+
+        let n_keys: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM keys")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n_keys, 0);
+        assert!(db::get_pending(&pool, &token).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn expired_first_time_pending_removed_by_cleaner() {
+        use crate::models::PendingSubmission;
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        db::insert_pending(
+            &pool,
+            &PendingSubmission {
+                token: "d".repeat(64),
+                new_fingerprint: "ABCDEF0123456789ABCDEF0123456789ABCDEF01".into(),
+                email: "expired@test.example".into(),
+                first_name: None,
+                last_name: None,
+                fluxer_id: None,
+                discord_id: None,
+                irc_id: None,
+                callsign: None,
+                dmr_id: None,
+                radio_affiliation: None,
+                street: None,
+                country: None,
+                postal_code: None,
+                region: None,
+                organisation: None,
+                role: None,
+                note: None,
+                badge_number: None,
+                armored_key: "-----BEGIN stub-----".into(),
+                expires_at: chrono::Utc::now()
+                    .checked_sub_signed(chrono::Duration::hours(1))
+                    .unwrap()
+                    .to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let n = db::expire_pending(&pool).await.unwrap();
+        assert_eq!(n, 1);
+    }
 
     #[tokio::test]
     async fn expired_pending_token_is_gone_and_row_removed() {

@@ -1,0 +1,95 @@
+=== RUN 2 (fresh stack via run-adversarial.sh) ===
+Resetting Docker stack (fresh DB + MailHog)...
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+[4m>>>> Executing external compose provider "/usr/bin/docker-compose". Please refer to the documentation for details. <<<<
+
+[0mCreating network "docker_default" with the default driver
+Building fulla
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+[1/2] STEP 1/7: FROM docker.io/rust:1-bookworm AS builder
+[1/2] STEP 2/7: WORKDIR /build
+--> Using cache c4d8a3bd8fc8755f6ba74ab37f3549e359816fffdb8c44d8723edb9f99e31d76
+--> c4d8a3bd8fc8
+[1/2] STEP 3/7: COPY Cargo.toml Cargo.lock ./
+--> Using cache dd52857a8257d6a257afeac13593049b299ff059a6a2570f555412feee497178
+--> dd52857a8257
+[1/2] STEP 4/7: COPY migrations ./migrations
+--> Using cache a5b7a7127548629ba9646b0fc8e92afd04785afa1788d4ce6466ad72ee4d7051
+--> a5b7a7127548
+[1/2] STEP 5/7: COPY src ./src
+--> Using cache 91d7a8f1869f2019d5643fd7e62863852e9b61df98d6f1e897de2d19f32a5ddf
+--> 91d7a8f1869f
+[1/2] STEP 6/7: COPY templates ./templates
+--> Using cache e540076d28c44308f6d1011ce299b975020e7b235883ba4b87ef6168dcdcad40
+--> e540076d28c4
+[1/2] STEP 7/7: RUN cargo build --release --locked
+--> Using cache 900c369fdaa6957bc604cf767d848629ef66c31a6c847817a02b057a2d46f910
+--> 900c369fdaa6
+[2/2] STEP 1/11: FROM docker.io/debian:bookworm-slim AS runtime
+[2/2] STEP 2/11: RUN apt-get update     && apt-get install -y --no-install-recommends ca-certificates curl     && rm -rf /var/lib/apt/lists/*
+--> Using cache 18944502f67bed92cd2637795b175c1f24cca52194efb16bda1180d4e5ff5138
+--> 18944502f67b
+[2/2] STEP 3/11: WORKDIR /app
+--> Using cache df233687eaff60018ee34cb9d8bb16a35c9e3b6d85143895e853b9c6bd0ccfa9
+--> df233687eaff
+[2/2] STEP 4/11: COPY --from=builder /build/target/release/fulla /usr/local/bin/fulla
+--> Using cache fbf21bc8f2bc8cf5f6d64103b3fc5b5c1e4bb67687b4f664b804c0daa71ceaa0
+--> fbf21bc8f2bc
+[2/2] STEP 5/11: COPY --from=builder /build/migrations ./migrations
+--> Using cache 7e3d08375105ecedf890e0df24ed31703bd3b20ba1ffed21c0b9409f30ade035
+--> 7e3d08375105
+[2/2] STEP 6/11: COPY --from=builder /build/templates ./templates
+--> Using cache b1d351123c9464309e0750de632bb1c37f833dffeadba34c8e044934544d48e4
+--> b1d351123c94
+[2/2] STEP 7/11: RUN mkdir -p /data
+--> Using cache e3ef81c9dd7972ff5acf6a15ed3e9741c64d1593b78178fd006ca56d64d33cd5
+--> e3ef81c9dd79
+[2/2] STEP 8/11: ENV DATABASE_URL=sqlite:/data/keyserver.db?mode=rwc
+--> Using cache 4a89ad40a652cb2e82b5a02d52438deedcb51a15c4694a156edd03eb8c22bf99
+--> 4a89ad40a652
+[2/2] STEP 9/11: EXPOSE 8080
+--> Using cache cf89386212c29cad818f21ad739cb5c50423e9ddf6e7aed473511f67098ab055
+--> cf89386212c2
+[2/2] STEP 10/11: HEALTHCHECK --interval=3s --timeout=2s --retries=20     CMD curl -sf http://127.0.0.1:8080/ || exit 1
+--> Using cache 42537d9213f34fb0b480ddb60ffed66351191445d5e8d048224428fef21942b6
+--> 42537d9213f3
+[2/2] STEP 11/11: CMD ["fulla"]
+--> Using cache 416120505276d0ec9717b5cde0859964cbab51c7e71e626e8e73610b5dee26bc
+[2/2] COMMIT docker_fulla
+--> 416120505276
+Successfully tagged localhost/docker_fulla:latest
+416120505276d0ec9717b5cde0859964cbab51c7e71e626e8e73610b5dee26bc
+Creating docker_mailhog_1 ... 
+Creating docker_mailhog_1 ... done
+Creating docker_fulla_1   ... 
+Creating docker_fulla_1   ... done
+Waiting for Fulla...
+    Finished `release` profile [optimized] target(s) in 0.11s
+     Running `/tmp/cursor-sandbox-cache/e2c35a13f5f72aaa9279fb6cf80b908e/cargo-target/release/fulla-adversarial`
+
+## Adversarial test results
+
+| Category | Test | Result | Detail |
+|----------|------|--------|--------|
+| malformed | oversized_request_body | PASS | HTTP 413 Payload Too Large |
+| malformed | bad_openpgp | PASS | HTTP 422 with reason |
+| malformed | oversized_note_field | PASS | HTTP 422 |
+| malformed | invalid_utf8_json | PASS | HTTP 400 Bad Request |
+| malformed | fingerprint_path_short | PASS | HTTP 400 |
+| malformed | fingerprint_path_non_hex | PASS | HTTP 400 |
+| malformed | fingerprint_path_traversal | PASS | HTTP 404 |
+| malformed | fingerprint_path_sqli | PASS | HTTP 400 |
+| rate_limit | email_case_pending_guard | FINDING | first submit HTTP 500 Internal Server Error |
+| rate_limit | mutate_per_ip_hourly | PASS | 7th submit returned HTTP 429 (limit=5 in docker/fulla.env) |
+| rate_limit | read_side_unlimited | KNOWN_GAP | 40 rapid GET /keys returned no 429 (documented gap) |
+| identity | email_case_pending_setup | FINDING | first submit HTTP 429 Too Many Requests |
+| automated | json_fuzz_0 | PASS | HTTP 429 Too Many Requests |
+| automated | json_fuzz_1 | PASS | HTTP 429 Too Many Requests |
+| automated | json_fuzz_2 | PASS | HTTP 429 Too Many Requests |
+| automated | json_fuzz_3 | PASS | HTTP 429 Too Many Requests |
+| automated | search_revoked_filter_gap | KNOWN_GAP | multi-filter GET /keys has no active-only filter; revoked rows appear when present (prior investigation) |
+| automated | slow_partial_post | PASS | connection closed or completed within 8.000645863s |
+| tokens | confirm_flow_setup | FINDING | submit HTTP 429 Too Many Requests |
+
+Summary: 19 tests, 3 findings, 2 known gaps
+exit=1

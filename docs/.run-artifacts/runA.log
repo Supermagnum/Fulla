@@ -1,0 +1,29 @@
+
+## Adversarial test results
+
+| Category | Test | Result | Detail |
+|----------|------|--------|--------|
+| malformed | oversized_request_body | PASS | HTTP 413 Payload Too Large |
+| malformed | bad_openpgp | PASS | HTTP 422 with reason |
+| malformed | oversized_note_field | PASS | HTTP 422 |
+| malformed | invalid_utf8_json | PASS | HTTP 400 Bad Request |
+| malformed | fingerprint_path_short | PASS | HTTP 400 |
+| malformed | fingerprint_path_non_hex | PASS | HTTP 400 |
+| malformed | fingerprint_path_traversal | PASS | HTTP 404 |
+| malformed | fingerprint_path_sqli | PASS | HTTP 400 |
+| identity | email_case_variant_pending_guard | PASS | User@Example.com blocked while user@example.com pending (LOWER normalization) |
+| identity | unicode_homoglyph_pending_guard | FINDING | HTTP 500 after homoglyph submit — pending guard did not block (LOWER-only); server logs: SMTPUTF8 required for non-ASCII mailbox (second pending row inserted before mail failed) |
+| tokens | confirm_once | PASS | HTTP 200 |
+| tokens | confirm_replay | PASS | second GET /confirm returns 404 |
+| tokens | token_timing_side_channel | SKIP | avg wrong confirm 0.000s vs wrong reject 0.000s — 256-bit token; DB lookup not constant-time (acceptable given entropy) |
+| automated | json_fuzz_0 | PASS | HTTP 422 Unprocessable Entity |
+| automated | json_fuzz_1 | PASS | HTTP 422 Unprocessable Entity |
+| automated | json_fuzz_2 | PASS | HTTP 422 Unprocessable Entity |
+| automated | json_fuzz_3 | PASS | HTTP 422 Unprocessable Entity |
+| automated | search_revoked_filter_gap | KNOWN_GAP | multi-filter GET /keys has no active-only filter; revoked rows appear when present (prior investigation) |
+| automated | slow_partial_post | PASS | connection closed or completed within 8.001259978s |
+| rate_limit | mutate_per_ip_hourly | PASS | 52th submit returned HTTP 429 (limit=50 in docker/fulla.env) |
+| rate_limit | read_side_unlimited | KNOWN_GAP | 40 rapid GET /keys returned no 429 (documented gap) |
+
+Summary: 21 tests, 1 findings, 2 known gaps
+exit=1
