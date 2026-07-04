@@ -55,3 +55,4 @@ reqwest = { version = "0.12", default-features = false, features = [
 base64 = "0.22"
 percent-encoding = "2"
 url = "2"
+confusables = "0.1"

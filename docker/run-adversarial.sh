@@ -29,4 +29,5 @@ cd "$ROOT/adversarial-tests"
 export FULLA_BASE_URL="${FULLA_BASE_URL:-http://127.0.0.1:8080}"
 export MAILHOG_API="${MAILHOG_API:-http://127.0.0.1:8025}"
 export FULLA_EXPECT_RATE_LIMIT="${FULLA_EXPECT_RATE_LIMIT:-50}"
+export FULLA_EXPECT_READ_RATE_LIMIT="${FULLA_EXPECT_READ_RATE_LIMIT:-500}"
 cargo run --release

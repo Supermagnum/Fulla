@@ -656,7 +656,7 @@ mod tests {
             config: Arc::new(Config::test_local()),
             mailer: Arc::new(Mailer::noop_for_tests()),
             templates: Arc::new(templates()),
-            rate_limit: crate::rate_limit::MutationRateLimit::new(999),
+            rate_limits: crate::rate_limit::RateLimits::permissive_for_tests(),
         }
     }
 
@@ -984,5 +984,37 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().contains("different key material"));
+    }
+
+    #[tokio::test]
+    async fn homoglyph_email_blocked_while_pending() {
+        let pool = pool_migrated().await;
+        let tmpl = templates();
+        let cfg = Arc::new(Config::test_local());
+        let latin = "user-homoglyph@test.example";
+        assert!(matches!(
+            process_submission(
+                base_payload(latin, armored_cv25519(latin)),
+                &pool,
+                cfg.as_ref(),
+                &Mailer::noop_for_tests(),
+                &tmpl,
+            )
+            .await
+            .unwrap(),
+            SubmitDecision::PendingConfirmation
+        ));
+
+        let homoglyph = format!("us\u{0435}r-homoglyph@test.example");
+        let err = process_submission(
+            base_payload(&homoglyph, armored_cv25519(&homoglyph)),
+            &pool,
+            cfg.as_ref(),
+            &Mailer::noop_for_tests(),
+            &tmpl,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("confirmation is already pending"));
     }
 }

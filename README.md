@@ -14,6 +14,7 @@ Fulla is a closed Galdralag hardware key registry backed by SQLite. It exposes a
   - [Key listing and search](#key-listing-and-search)
 - [Security testing (Docker)](#security-testing-docker)
 - [Galdralag integration](#galdralag-integration)
+- [HTTP API reference](#http-api-reference)
 - [Developer codemap](#developer-codemap)
 - [Network ports and firewall](#network-ports-and-firewall)
 - [Debugging and troubleshooting](#debugging-and-troubleshooting)
@@ -159,6 +160,10 @@ Reset between runs: `docker compose down -v && docker compose up -d --build`. Th
 ## Galdralag integration
 
 Client-facing integration detail (auth model, config, confirmation flow, worked example): **[docs/FULLA_INTEGRATION.md](docs/FULLA_INTEGRATION.md)**. Link that document from the Galdralag-firmware repo when documenting `galdra keyserver`.
+
+## HTTP API reference
+
+Third-party and GUI clients: full endpoint list, JSON schemas, status codes, and OpenPGP rules in **[docs/API.md](docs/API.md)**.
 
 ## Developer codemap
 

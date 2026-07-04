@@ -48,6 +48,14 @@ impl Env {
             .and_then(|v| v.trim().parse().ok())
             .unwrap_or(50)
     }
+
+    /// Expected hourly GET limit; `None` when read limiting is disabled.
+    pub fn expected_read_rate_limit(&self) -> Option<u32> {
+        std::env::var("FULLA_EXPECT_READ_RATE_LIMIT")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .or(Some(500))
+    }
 }
 
 pub fn armored_cv25519(email: &str) -> Result<String> {

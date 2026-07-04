@@ -9,6 +9,7 @@ use sqlx::sqlite::SqliteConnection;
 use sqlx::{QueryBuilder, Row, SqlitePool};
 
 use crate::config::PeerConfig;
+use crate::email_normalize::normalize_email_identity;
 use crate::models::{DbKeyRow, KeyFilter, KeyRecord, NewKeyRecord, PendingSubmission};
 
 pub async fn insert_key(pool: &SqlitePool, record: &NewKeyRecord) -> Result<()> {
@@ -135,21 +136,23 @@ pub async fn revoke_key(pool: &SqlitePool, fp: &str, reason: Option<&str>) -> Re
 }
 
 pub async fn insert_pending(pool: &SqlitePool, pending: &PendingSubmission) -> Result<()> {
+    let email_canonical = normalize_email_identity(&pending.email);
     sqlx::query(
         r#"
         INSERT INTO pending_submissions (
-            token, new_fingerprint, email, first_name, last_name,
+            token, new_fingerprint, email, email_canonical, first_name, last_name,
             fluxer_id, discord_id, irc_id,
             callsign, dmr_id, radio_affiliation,
             street, country, postal_code, region,
             organisation, role, note, badge_number,
             armored_key, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
     )
     .bind(&pending.token)
     .bind(&pending.new_fingerprint)
     .bind(&pending.email)
+    .bind(&email_canonical)
     .bind(&pending.first_name)
     .bind(&pending.last_name)
     .bind(&pending.fluxer_id)
@@ -173,14 +176,15 @@ pub async fn insert_pending(pool: &SqlitePool, pending: &PendingSubmission) -> R
     Ok(())
 }
 
-/// Whether an unexpired pending row exists for this email (case-insensitive).
+/// Whether an unexpired pending row exists for this mailbox identity.
 pub async fn has_pending_for_email(pool: &SqlitePool, email: &str) -> Result<bool> {
+    let canonical = normalize_email_identity(email);
     let n: i64 = sqlx::query_scalar(
         r#"SELECT COUNT(*) FROM pending_submissions
-           WHERE LOWER(email) = LOWER(?)
-             AND expires_at >= datetime('now')"#,
+           WHERE email_canonical = ?
+             AND datetime(expires_at) >= datetime('now')"#,
     )
-    .bind(email)
+    .bind(&canonical)
     .fetch_one(pool)
     .await?;
     Ok(n > 0)
@@ -211,9 +215,11 @@ pub async fn delete_pending(pool: &SqlitePool, token: &str) -> Result<()> {
 }
 
 pub async fn expire_pending(pool: &SqlitePool) -> Result<u64> {
-    let res = sqlx::query(r#"DELETE FROM pending_submissions WHERE expires_at < datetime('now')"#)
-        .execute(pool)
-        .await?;
+    let res = sqlx::query(
+        r#"DELETE FROM pending_submissions WHERE datetime(expires_at) < datetime('now')"#,
+    )
+    .execute(pool)
+    .await?;
     Ok(res.rows_affected())
 }
 

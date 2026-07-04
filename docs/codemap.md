@@ -2,7 +2,7 @@
 
 Guide to how the Fulla registry is structured, which modules own which behaviour, and where to look when changing submission, confirmation, search, or replication.
 
-For operator setup see [README.md](../README.md). For Galdralag client integration see [FULLA_INTEGRATION.md](FULLA_INTEGRATION.md). For executed security probes see [SECURITY_TEST_RESULTS.md](SECURITY_TEST_RESULTS.md).
+For operator setup see [README.md](../README.md). For Galdralag client integration see [FULLA_INTEGRATION.md](FULLA_INTEGRATION.md). For **GUI / third-party HTTP clients** see [API.md](API.md). For executed security probes see [SECURITY_TEST_RESULTS.md](SECURITY_TEST_RESULTS.md).
 
 ---
 
@@ -16,7 +16,7 @@ Fulla is a single Rust binary (`fulla`) built on **Axum** + **SQLx (SQLite)**. I
 
 Every new key registration (first-time or replacement) goes through **mailbox confirmation**: rows live in `pending_submissions` until the recipient opens `/confirm/{token}`. Only then does the key appear in `keys` with `status = 'active'`.
 
-There is **no client authentication** on push/fetch/revoke today; trust comes from OpenPGP validation, email confirmation, per-IP mutation rate limits, and network placement.
+There is **no client authentication** on push/fetch/revoke today; trust comes from OpenPGP validation, email confirmation, per-IP (and optional global) rate limits on reads and mutations, and network placement.
 
 ---
 
@@ -32,7 +32,8 @@ Fulla/
 │   ├── openpgp.rs        # sequoia-openpgp parse/validate/revoke
 │   ├── mail.rs           # Outbound SMTP (lettre)
 │   ├── templates.rs      # Minijinja loader
-│   ├── rate_limit.rs     # Per-IP hourly limit on POST mutations
+│   ├── email_normalize.rs # Mailbox identity canonicalization (case + confusables)
+│   ├── rate_limit.rs     # Per-IP and optional global rate limits (mutate + read)
 │   ├── handlers/
 │   │   ├── mod.rs        # normalize_base_url
 │   │   ├── submit.rs     # POST submit + process_submission core logic
@@ -63,8 +64,8 @@ Fulla/
 3. Open SQLite pool; optionally load **CR-SQLite extension** on each connection when mesh is enabled.
 4. Run `migrations/`; if mesh active: activate CR-SQLite on `keys`, sync peer rows from config.
 5. `replication::start()` — spawn mesh sync server/cron, Litestream cron, SSH cron as configured.
-6. Build `Mailer`, load `WebTemplates`, construct `MutationRateLimit`.
-7. Assemble Axum router (read routes + mutate routes), layers: 128 KiB body limit, compression, trace.
+6. Build `Mailer`, load `WebTemplates`, construct `RateLimits` from config.
+7. Assemble Axum router (read routes split: limited vs confirm/reject exempt; mutate routes), layers: 128 KiB body limit, compression, trace.
 8. Bind plain HTTP or rustls TLS (`KEYSERVER_TLS_CERT` + `KEYSERVER_TLS_KEY`).
 9. Spawn `run_pending_cleaner` — hourly `db::expire_pending`.
 
@@ -76,7 +77,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub mailer: Arc<Mailer>,
     pub templates: Arc<WebTemplates>,
-    pub rate_limit: MutationRateLimit,
+    pub rate_limits: RateLimits,
 }
 ```
 
@@ -86,17 +87,17 @@ pub struct AppState {
 
 | Method | Path | Handler | Rate limited | Notes |
 |--------|------|---------|--------------|-------|
-| GET | `/` | `web::index` | No | Home page |
-| GET | `/keys` | `web::key_list` | No | Search / list; JSON with `Accept: application/json` |
-| GET | `/keys/:fingerprint` | `web::key_detail` | No | 40-char hex fingerprint |
-| GET | `/submit` | `web::submit_form` | No | HTML form |
+| GET | `/` | `web::index` | Optional | Home page |
+| GET | `/keys` | `web::key_list` | Optional | Search / list; JSON with `Accept: application/json` |
+| GET | `/keys/:fingerprint` | `web::key_detail` | Optional | 40-char hex fingerprint |
+| GET | `/submit` | `web::submit_form` | Optional | HTML form |
 | POST | `/submit` | `submit::handle_form` | **Yes** | Form-urlencoded submit |
 | POST | `/api/v1/keys` | `submit::handle_api` | **Yes** | JSON submit (`galdra` push) |
-| GET | `/revoke` | `web::revoke_form` | No | HTML form |
+| GET | `/revoke` | `web::revoke_form` | Optional | HTML form |
 | POST | `/revoke` | `revoke::handle_form` | **Yes** | Form revoke |
 | POST | `/api/v1/keys/revoke` | `revoke::handle_api` | **Yes** | JSON revoke |
-| GET | `/confirm/:token` | `confirm::handle_confirm` | No | 64-char hex token |
-| GET | `/reject/:token` | `confirm::handle_reject` | No | Deletes pending row |
+| GET | `/confirm/:token` | `confirm::handle_confirm` | No | 64-char hex token; exempt from read limit |
+| GET | `/reject/:token` | `confirm::handle_reject` | No | Deletes pending row; exempt from read limit |
 
 Mesh replication (when enabled) adds a **separate listener** on `replication.mesh.sync_api_port` — see [Replication](#replication).
 
@@ -127,8 +128,8 @@ process_submission           (submit.rs)  ← unit-tested entry point
                 │
                 ▼
         enqueue_pending_confirmation     (submit.rs)
-                ├─ has_pending_for_email (db.rs) — LOWER(email), unexpired
-                ├─ insert_pending
+                ├─ has_pending_for_email (db.rs) — `email_canonical`, unexpired
+                ├─ insert_pending (stores `email` + `email_canonical`)
                 └─ mailer.send_plain + Minijinja email body
 ```
 
@@ -252,10 +253,10 @@ Environment variables (required unless noted):
 
 | Function | Description |
 |----------|-------------|
-| `insert_pending` | Stage submission |
-| `has_pending_for_email` | Case-insensitive; checks `expires_at >= now` |
+| `insert_pending` | Stage submission; writes `email_canonical` |
+| `has_pending_for_email` | Matches `email_canonical` (case + non-ASCII confusables); `datetime(expires_at)` |
 | `get_pending`, `delete_pending` | Token lookup / cleanup |
-| `expire_pending` | Hourly housekeeping |
+| `expire_pending` | Hourly housekeeping (`datetime(expires_at) < datetime('now')`) |
 
 **CR-SQLite mesh** (when extension loaded)
 
@@ -288,15 +289,26 @@ Max upload size: 128 KiB (also enforced at HTTP layer).
 | `Mailer::new` | TLS relay (`AsyncSmtpTransport::relay`) or plain (`builder_dangerous`) when `KEYSERVER_SMTP_TLS=false` |
 | `send_plain(to, subject, body)` | Single-part text email |
 
+### `email_normalize.rs`
+
+| Function | Description |
+|----------|-------------|
+| `normalize_email_identity(raw)` | Lowercase trim; ASCII left as-is; non-ASCII chars mapped via UTS #39 confusables data |
+
+Used by `insert_pending` and `has_pending_for_email`. Does **not** rewrite ASCII letters (whole-string skeleton would map `m` → `rn`).
+
 ### `rate_limit.rs`
 
 | Function | Description |
 |----------|-------------|
-| `MutationRateLimit::new(per_hour)` | `governor` keyed limiter by source IP |
+| `RateLimits::from_config` | Per-IP mutate/read + optional global limiters from env |
 | `mutation_rate_guard` | Axum middleware on mutate router; 429 JSON or plain text |
+| `read_rate_guard` | Axum middleware on read router (except confirm/reject) |
 | `rate_over_response` | Content negotiation for limit responses |
 
 Uses `ConnectInfo<SocketAddr>`; falls back to loopback if missing.
+
+Env: `KEYSERVER_RATE_LIMIT_SUBMISSIONS` (default 5), `KEYSERVER_RATE_LIMIT_READS` (default 1200; `0` disables), optional `KEYSERVER_RATE_LIMIT_SUBMISSIONS_GLOBAL` / `KEYSERVER_RATE_LIMIT_READS_GLOBAL`.
 
 ### `templates.rs`
 
@@ -378,9 +390,10 @@ Applied to the merged router in `main.rs`:
 | `RequestBodyLimitLayer(128 KiB)` | HTTP 413 on oversized bodies |
 | `CompressionLayer` | Response compression |
 | `TraceLayer` | Request/response tracing |
-| `mutation_rate_guard` | Only on POST submit/revoke routes |
+| `mutation_rate_guard` | POST submit/revoke routes |
+| `read_rate_guard` | GET pages/search (when read limits enabled); confirm/reject exempt |
 
-Read paths (`GET /keys`, etc.) are **not** rate limited.
+Read paths are rate limited when `KEYSERVER_RATE_LIMIT_READS` or `KEYSERVER_RATE_LIMIT_READS_GLOBAL` is set (default 1200/hour per IP). Set `KEYSERVER_RATE_LIMIT_READS=0` to disable per-IP read limits.
 
 ---
 
@@ -397,9 +410,10 @@ See [SECURITY_TEST_RESULTS.md](SECURITY_TEST_RESULTS.md) for executed results.
 
 Known behaviour documented there:
 
-- Case-variant emails share one pending slot (`LOWER`).
-- Unicode homoglyphs do **not** — separate pending rows possible.
+- Case-variant and confusable Unicode emails share one pending slot (`email_canonical`).
 - Multi-filter JSON search may return revoked keys.
+
+Migration `009_pending_email_canonical.sql` adds `email_canonical` to `pending_submissions`.
 
 ---
 
@@ -411,9 +425,9 @@ Known behaviour documented there:
 | Change confirmation email text | `templates/email/*.txt`, `enqueue_pending_confirmation` context |
 | Tighten OpenPGP policy | `openpgp.rs` `policy_check_keys` |
 | Add auth to an endpoint | New middleware or handler checks in `handlers/`; no existing pattern |
-| Fix pending duplicate logic | `db::has_pending_for_email`, `enqueue_pending_confirmation` |
+| Fix pending duplicate logic | `email_normalize.rs`, `db::has_pending_for_email`, `enqueue_pending_confirmation` |
 | Mesh sync behaviour | `replication/mesh.rs`, `db.rs` CR-SQLite helpers |
-| Rate limit scope | `main.rs` mutate router, `rate_limit.rs` |
+| Rate limit scope | `main.rs` read/mutate routers, `rate_limit.rs`, `config.rs` |
 
 ---
 
@@ -421,6 +435,7 @@ Known behaviour documented there:
 
 | Document | Content |
 |----------|---------|
+| [API.md](API.md) | HTTP API for GUI and third-party clients |
 | [FULLA_INTEGRATION.md](FULLA_INTEGRATION.md) | Galdralag `galdra keyserver` client, deployment posture |
 | [SECURITY_TEST_RESULTS.md](SECURITY_TEST_RESULTS.md) | Docker adversarial run output |
 | [../docker/README.md](../docker/README.md) | Local MailHog stack |

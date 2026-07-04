@@ -282,30 +282,42 @@ async fn run_rate_limit(env: &Env, r: &mut Report) -> Result<()> {
         );
     }
 
-    // Read-side rate limit (known gap)
-    let mut saw_429 = false;
-    for _ in 0..40 {
-        let resp = env
-            .client
-            .get(format!("{}/keys", env.fulla))
-            .header("Accept", "application/json")
-            .send()
-            .await?;
-        if resp.status().as_u16() == 429 {
-            saw_429 = true;
+    // Read-side rate limit
+    let read_limit = env.expected_read_rate_limit();
+    if let Some(limit) = read_limit {
+        let attempts = limit as usize + 2;
+        let mut last_status = 0u16;
+        for _ in 0..attempts {
+            let resp = env
+                .client
+                .get(format!("{}/keys", env.fulla))
+                .header("Accept", "application/json")
+                .send()
+                .await?;
+            last_status = resp.status().as_u16();
         }
-    }
-    if saw_429 {
-        r.finding(
-            "rate_limit",
-            "read_side_unlimited",
-            "unexpected HTTP 429 on GET /keys",
-        );
+        if last_status == 429 {
+            r.pass(
+                "rate_limit",
+                "read_side_per_ip_hourly",
+                format!(
+                    "{attempts}th GET /keys returned HTTP 429 (limit={limit} in docker/fulla.env)"
+                ),
+            );
+        } else {
+            r.finding(
+                "rate_limit",
+                "read_side_per_ip_hourly",
+                format!(
+                    "expected 429 on GET attempt {attempts}, got HTTP {last_status} (limit={limit})"
+                ),
+            );
+        }
     } else {
         r.gap(
             "rate_limit",
-            "read_side_unlimited",
-            "40 rapid GET /keys returned no 429 (documented gap)",
+            "read_side_per_ip_hourly",
+            "read rate limit disabled (KEYSERVER_RATE_LIMIT_READS=0)",
         );
     }
 
@@ -403,7 +415,7 @@ async fn run_homoglyph(env: &Env, r: &mut Report) -> Result<()> {
         r.finding(
             "identity",
             "unicode_homoglyph_pending_guard",
-            "HTTP 500 after homoglyph submit — pending guard did not block (LOWER-only); server logs: SMTPUTF8 required for non-ASCII mailbox (second pending row inserted before mail failed)",
+            "HTTP 500 after homoglyph submit (expected 422 pending guard or successful SMTP)",
         );
     } else if h2_status == 422 {
         r.gap(

@@ -272,7 +272,7 @@ mod tests {
                 )
                 .unwrap(),
             ),
-            rate_limit: crate::rate_limit::MutationRateLimit::new(999),
+            rate_limits: crate::rate_limit::RateLimits::permissive_for_tests(),
         };
 
         run_confirm(&app, &token).await.unwrap();
@@ -417,7 +417,7 @@ mod tests {
                 )
                 .unwrap(),
             ),
-            rate_limit: crate::rate_limit::MutationRateLimit::new(999),
+            rate_limits: crate::rate_limit::RateLimits::permissive_for_tests(),
         };
 
         let token = "c".repeat(64);

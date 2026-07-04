@@ -2,6 +2,8 @@
 
 This document describes how **Galdralag** components (`galdra`, devices running **galdrad**) should interact with a **Fulla** key registry over HTTP. It complements the operator-focused [README](../README.md) and the Docker adversarial stack in [docker/README.md](../docker/README.md).
 
+**GUI and third-party clients:** see **[API.md](API.md)** for complete request/response schemas, status codes, and search parameters.
+
 Fulla on GitHub: [Supermagnum/Fulla](https://github.com/Supermagnum/Fulla).  
 Galdralag firmware / `galdra`: [Supermagnum/Galdralag-firmware](https://github.com/Supermagnum/Galdralag-firmware).
 
@@ -93,7 +95,7 @@ Fulla exposes `POST /api/v1/keys/revoke` (OpenPGP revocation certificate). **`ga
 1. **TLS:** Prefer reverse proxy (nginx/Caddy) on `:443` → Fulla `KEYSERVER_BIND` on localhost, or Fulla native rustls with operator-managed certs.
 2. **Firewall:** Public `:443` (or your chosen port) for users; **do not** expose mesh `sync_api_port` (see README replication section).
 3. **SMTP:** Real provider for confirmation mail in production; MailHog only for Docker tests. Set `KEYSERVER_SMTP_TLS=false` for plain SMTP sinks (MailHog). For non-ASCII recipient addresses, the relay must support **SMTPUTF8**.
-4. **Rate limits:** `KEYSERVER_RATE_LIMIT_SUBMISSIONS` (per-IP hourly on POST submit/revoke). One pending row per **normalized** email (`LOWER(email)`) limits confirmation spam — **case variants** (`User@Example.com` vs `user@example.com`) share one pending slot; **Unicode homoglyphs** (visually similar characters) do **not** (see [SECURITY_TEST_RESULTS.md](SECURITY_TEST_RESULTS.md)).
+4. **Rate limits:** `KEYSERVER_RATE_LIMIT_SUBMISSIONS` (per-IP hourly on POST submit/revoke). Optional global caps via `KEYSERVER_RATE_LIMIT_SUBMISSIONS_GLOBAL` and `KEYSERVER_RATE_LIMIT_READS_GLOBAL`. Read paths (`GET /keys`, etc.) are limited per IP via `KEYSERVER_RATE_LIMIT_READS` (default 1200/hour; `0` disables). Confirm/reject links are exempt. One pending row per **canonical** mailbox identity (case + Unicode confusables) limits confirmation spam.
 5. **Private single-operator:** Same software; restrict who can reach the listener. Open submission remains possible for anyone on that network unless you add front-door controls.
 6. **Open / community registry:** If you accept public self-registration, be aware that confusable Unicode mailboxes can each obtain a separate pending confirmation for the same human operator unless you add IDNA/confusable normalization or manual review. Internationalized mailbox addresses also require an **SMTPUTF8**-capable relay.
 
@@ -162,6 +164,7 @@ curl -sS 'http://127.0.0.1:8080/keys?email=you@example.com' -H 'Accept: applicat
 | Operator README | Fulla `README.md` |
 | Docker + MailHog | Fulla `docker/README.md` |
 | Adversarial test results (executed) | Fulla `docs/SECURITY_TEST_RESULTS.md` |
+| HTTP API reference (GUI / third-party) | Fulla `docs/API.md` |
 | `galdra keyserver` implementation | Galdralag-firmware `galdra/src/commands/keyserver/` |
 
 When updating Galdralag-firmware, add a short pointer in that repo's docs (e.g. `docs/FULLA.md`) linking here for registry URL, `pending_confirmation`, and fetch semantics.

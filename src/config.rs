@@ -20,6 +20,12 @@ pub struct Config {
     pub keyserver_smtp_from: String,
     pub keyserver_smtp_tls: bool,
     pub keyserver_rate_limit_submissions: u32,
+    /// Per-IP hourly GET limit; `None` disables read rate limiting.
+    pub keyserver_rate_limit_reads: Option<u32>,
+    /// Optional global hourly cap on POST submit/revoke (`None` = off).
+    pub keyserver_rate_limit_submissions_global: Option<u32>,
+    /// Optional global hourly cap on rate-limited GET paths (`None` = off).
+    pub keyserver_rate_limit_reads_global: Option<u32>,
     pub replication: ReplicationConfig,
 }
 
@@ -168,6 +174,11 @@ impl Config {
         if keyserver_rate_limit_submissions == 0 {
             keyserver_rate_limit_submissions = 5;
         }
+        let keyserver_rate_limit_reads = parse_reads_limit("KEYSERVER_RATE_LIMIT_READS", 1200);
+        let keyserver_rate_limit_submissions_global =
+            parse_optional_u32("KEYSERVER_RATE_LIMIT_SUBMISSIONS_GLOBAL");
+        let keyserver_rate_limit_reads_global =
+            parse_optional_u32("KEYSERVER_RATE_LIMIT_READS_GLOBAL");
 
         let replication = replication_from_optional_toml()?;
 
@@ -184,6 +195,9 @@ impl Config {
             keyserver_smtp_from,
             keyserver_smtp_tls,
             keyserver_rate_limit_submissions,
+            keyserver_rate_limit_reads,
+            keyserver_rate_limit_submissions_global,
+            keyserver_rate_limit_reads_global,
             replication,
         })
     }
@@ -263,6 +277,22 @@ fn parse_u32(name: &'static str) -> Option<u32> {
     std::env::var(name).ok().and_then(|v| v.trim().parse().ok())
 }
 
+fn parse_optional_u32(name: &'static str) -> Option<u32> {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .filter(|&n| n > 0)
+}
+
+/// Per-IP read limit: unset → `default`, explicit `0` → disabled, else parsed value.
+fn parse_reads_limit(name: &'static str, default: u32) -> Option<u32> {
+    match std::env::var(name) {
+        Ok(v) if v.trim() == "0" => None,
+        Ok(v) => Some(v.trim().parse().unwrap_or(default)).filter(|&n| n > 0),
+        Err(_) => Some(default),
+    }
+}
+
 fn parse_bool(name: &'static str, default: bool) -> bool {
     match std::env::var(name) {
         Ok(v) => matches!(
@@ -289,6 +319,9 @@ impl Config {
             keyserver_smtp_from: "fulla-test@localhost".into(),
             keyserver_smtp_tls: true,
             keyserver_rate_limit_submissions: 1000,
+            keyserver_rate_limit_reads: None,
+            keyserver_rate_limit_submissions_global: None,
+            keyserver_rate_limit_reads_global: None,
             replication: ReplicationConfig::default(),
         }
     }

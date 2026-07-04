@@ -2,6 +2,7 @@
 
 mod config;
 mod db;
+mod email_normalize;
 mod handlers;
 mod mail;
 mod models;
@@ -31,7 +32,7 @@ use tracing_subscriber::EnvFilter;
 use crate::config::Config;
 use crate::handlers::{confirm, revoke, submit, web};
 use crate::mail::Mailer;
-use crate::rate_limit::MutationRateLimit;
+use crate::rate_limit::RateLimits;
 use crate::templates::WebTemplates;
 
 /// Shared server state (`RegistryKeyserverConfig` lives in firmware; avoid that name here).
@@ -41,7 +42,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub mailer: Arc<Mailer>,
     pub templates: Arc<WebTemplates>,
-    pub rate_limit: MutationRateLimit,
+    pub rate_limits: RateLimits,
 }
 
 #[tokio::main]
@@ -114,27 +115,41 @@ async fn main() -> anyhow::Result<()> {
     let mailer = Arc::new(Mailer::new(config.as_ref())?);
     let templates = Arc::new(WebTemplates::load_from_dir(template_dir()?)?);
 
-    let rate_limit = MutationRateLimit::new(config.keyserver_rate_limit_submissions);
+    let rate_limits = RateLimits::from_config(config.as_ref());
 
     let state = AppState {
         pool: pool.clone(),
         config: config.clone(),
         mailer,
         templates,
-        rate_limit,
+        rate_limits,
     };
 
     tokio::spawn(run_pending_cleaner(pool));
 
-    let read_only = Router::new()
+    let read_public = Router::new()
+        .route("/confirm/:token", get(confirm::handle_confirm))
+        .route("/reject/:token", get(confirm::handle_reject))
+        .with_state(state.clone());
+
+    let mut read_limited = Router::new()
         .route("/", get(web::index))
         .route("/keys", get(web::key_list))
         .route("/keys/:fingerprint", get(web::key_detail))
         .route("/submit", get(web::submit_form))
-        .route("/revoke", get(web::revoke_form))
-        .route("/confirm/:token", get(confirm::handle_confirm))
-        .route("/reject/:token", get(confirm::handle_reject))
-        .with_state(state.clone());
+        .route("/revoke", get(web::revoke_form));
+
+    if config.keyserver_rate_limit_reads.is_some() || config.keyserver_rate_limit_reads_global.is_some()
+    {
+        read_limited = read_limited.layer(middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit::read_rate_guard,
+        ));
+    }
+
+    let read_only = read_limited
+        .with_state(state.clone())
+        .merge(read_public);
 
     let mutate = Router::new()
         .route("/submit", post(submit::handle_form))
