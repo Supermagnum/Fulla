@@ -1,0 +1,5 @@
+[advisories]
+ignore = [
+    # rsa v0.9.10 via sequoia-openpgp only (not TLS). Fulla uses verify_backend (public RSA verify) on attacker certs; Marvin needs private-key decrypt/sign — no src/ path to sign_backend/decrypt_backend/SecretParts/into_keypair. Traced 2026-07-05; docs/SECURITY_TEST_RESULTS.md
+    "RUSTSEC-2023-0071",
+]

@@ -9,7 +9,9 @@ use serde::Deserialize;
 
 use crate::db;
 use crate::models::PushResponseJson;
-use crate::openpgp::{apply_and_verify_revocation, cert_fingerprint_hex, cert_from_armored};
+use crate::openpgp::{
+    apply_and_verify_revocation, cert_fingerprint_hex, cert_from_armored, CertPolicy,
+};
 use crate::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +29,7 @@ pub struct RevokeApiBody {
 pub async fn handle_form(State(app): State<AppState>, Form(f): Form<RevokeForm>) -> Response {
     match run_revoke(
         &app.pool,
+        app.config.as_ref(),
         f.email.trim().to_lowercase(),
         &f.armored_revocation_cert,
     )
@@ -57,6 +60,7 @@ fn submit_like_esc(s: &str) -> String {
 pub async fn handle_api(State(app): State<AppState>, Json(b): Json<RevokeApiBody>) -> Response {
     match run_revoke(
         &app.pool,
+        app.config.as_ref(),
         b.email.trim().to_lowercase(),
         &b.armored_revocation_cert,
     )
@@ -107,9 +111,11 @@ enum RevErr {
 
 async fn run_revoke(
     pool: &sqlx::SqlitePool,
+    cfg: &crate::config::Config,
     email: String,
     rev_armored: &str,
 ) -> Result<(), RevErr> {
+    let policy = CertPolicy::from_config(cfg);
     let rev_cert = cert_from_armored(rev_armored).map_err(|e| RevErr::User(e.to_string()))?;
     let fp = cert_fingerprint_hex(&rev_cert);
 
@@ -125,7 +131,7 @@ async fn run_revoke(
     }
 
     let stored = cert_from_armored(&row.armored_key).map_err(RevErr::Internal)?;
-    let reason = apply_and_verify_revocation(&stored, rev_armored)
+    let reason = apply_and_verify_revocation(&stored, rev_armored, &policy)
         .map_err(|e| RevErr::User(e.to_string()))?;
 
     db::revoke_key(pool, &fp, reason.as_deref())

@@ -13,7 +13,7 @@ use crate::db;
 use crate::handlers::normalize_base_url;
 use crate::mail::Mailer;
 use crate::models::{PendingSubmission, PushResponseJson, SubmitPayload};
-use crate::openpgp::parse_and_validate;
+use crate::openpgp::{parse_and_validate, CertPolicy};
 use crate::templates::WebTemplates;
 use crate::AppState;
 
@@ -377,7 +377,8 @@ pub async fn process_submission(
 ) -> Result<SubmitDecision, anyhow::Error> {
     validate_typed(&payload).map_err(anyhow::Error::msg)?;
 
-    let parsed = parse_and_validate(&payload.armored_public_key, payload.email.trim())
+    let policy = CertPolicy::from_config(cfg);
+    let parsed = parse_and_validate(&payload.armored_public_key, payload.email.trim(), &policy)
         .map_err(|e| anyhow::Error::msg(e.to_string()))?;
 
     if let Some(row) = db::get_active_key_by_fingerprint(pool, &parsed.fingerprint).await? {
@@ -593,7 +594,7 @@ mod tests {
     use crate::db;
     use crate::handlers::confirm;
     use crate::mail::Mailer;
-    use crate::openpgp::parse_and_validate;
+    use crate::openpgp::{parse_and_validate, CertPolicy};
     use crate::templates::WebTemplates;
     use crate::AppState;
 
@@ -808,7 +809,7 @@ mod tests {
         let email = "shared@test.example";
 
         let arm_a = armored_cv25519(email);
-        let parsed_a = parse_and_validate(&arm_a, email).unwrap();
+        let parsed_a = parse_and_validate(&arm_a, email, &CertPolicy::permissive()).unwrap();
         db::insert_key(
             &pool,
             &NewKeyRecord {
@@ -948,7 +949,7 @@ mod tests {
         let cfg = Arc::new(Config::test_local());
         let em = "mismatch@test.example";
         let arm = armored_cv25519(em);
-        let parsed = parse_and_validate(&arm, em).unwrap();
+        let parsed = parse_and_validate(&arm, em, &CertPolicy::permissive()).unwrap();
 
         db::insert_key(
             &pool,

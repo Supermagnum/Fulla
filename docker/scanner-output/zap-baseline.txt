@@ -1,0 +1,128 @@
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+Trying to pull docker.io/zaproxy/zap-stable:latest...
+Getting image source signatures
+Copying blob sha256:c0027f8934f6bf57dc5b1d6ad13043ed6808b667bffc3fa2d9eefed78bdb71ef
+Copying blob sha256:e7214010579b2dbe76040a2205c3b92eae0e4bcd7b4268a5aab100be1cb26e16
+Copying blob sha256:68629629b516c3cd6f5e71ffbe18e32afb1ae5b4926c92d058c0f11ef1fd58a3
+Copying blob sha256:a97078502c239c4384b445997d6fe1dcc71ea38a68ebc95bebf48c557ab97c49
+Copying blob sha256:df6b4100852a149bad33cd39d8e89e1c6f6bde67a52a7ff43e030e431f782b5a
+Copying blob sha256:e91ff970ae051e48ed88cb05c10b5f00b09809a1030af1706251702ad9db620f
+Copying blob sha256:4f4fb700ef54461cfa02571ae0db9a0dc1e0cdb5577484a6d75e68dc38e8acc1
+Copying blob sha256:4cabeb9f73c8bb2bd226ee01957bb8c18a266d6675d0d57127a5a080ce2c3bcf
+Copying blob sha256:ea0e6e3c11d2e0c6c8b86bd27c4e033c4342dd88b46a0de750d35ae4c68e931c
+Copying blob sha256:ed0a2937a253b61f3aa0da5fa4f283ac7c4b113fde89007b95d4964386e24db3
+Copying blob sha256:453319a711c85fd519b818950bc5c710858f82408f258167f73a36aecf40b856
+Copying blob sha256:1767b81f9310e1478b01abef7e51d1b87df741c7758eb508bca3fabbe7822c5d
+Copying blob sha256:7606cae03f6ea1106116759994058180d7d907b866185658b462a45c9396ca53
+Copying blob sha256:1eaa7f59b81a805e26a0048c677c9d5eba7509a1df801f16f41f748b554684f9
+Copying blob sha256:caafa78b72733c1c040a40cd51be9b6928cc594f3a2505a1213aa9e87031aaba
+Copying blob sha256:ec414bd46ce0932a3aab4c7b5981fb1bf5e7c05ae95ce062d8a01b3c75a95077
+Copying blob sha256:5eb2bf8c976eaa946febbb76e400aaa15a2f2302f520d5f5cc19c13c0a9659bb
+Copying blob sha256:53c9ad6c438abc8ab54d3d00f78a9cfda1f8ce34523b9bd7618200e2e61e963b
+Copying blob sha256:03c1ecc3d88c8f076b2e987a71be49ea92ce35f857256cd199ac44a03190d8f0
+Copying blob sha256:c39ca4def8aa483b592fddfc49a6a22d5b2b7eb4367a6e06c0b626dec0520836
+Copying config sha256:a62fed480d0b1338c08e2fb839c8dbde11e228c2ac8ef4ea90b8b37148a26601
+Writing manifest to image destination
+Using the Automation Framework
+Total of 21 URLs
+PASS: Vulnerable JS Library (Powered by Retire.js) [10003]
+PASS: In Page Banner Information Leak [10009]
+PASS: Cookie No HttpOnly Flag [10010]
+PASS: Cookie Without Secure Flag [10011]
+PASS: Re-examine Cache-control Directives [10015]
+PASS: Cross-Domain JavaScript Source File Inclusion [10017]
+PASS: Content-Type Header Missing [10019]
+PASS: Information Disclosure - Debug Error Messages [10023]
+PASS: Information Disclosure - Sensitive Information in HTTP Referrer Header [10025]
+PASS: HTTP Parameter Override [10026]
+PASS: Information Disclosure - Suspicious Comments [10027]
+PASS: Off-site Redirect [10028]
+PASS: Cookie Poisoning [10029]
+PASS: User Controllable Charset [10030]
+PASS: User Controllable HTML Element Attribute (Potential XSS) [10031]
+PASS: Viewstate [10032]
+PASS: Directory Browsing [10033]
+PASS: Heartbleed OpenSSL Vulnerability (Indicative) [10034]
+PASS: Strict-Transport-Security Header [10035]
+PASS: HTTP Server Response Header [10036]
+PASS: Server Leaks Information via "X-Powered-By" HTTP Response Header Field(s) [10037]
+PASS: X-Backend-Server Header Information Leak [10039]
+PASS: Secure Pages Include Mixed Content [10040]
+PASS: HTTP to HTTPS Insecure Transition in Form Post [10041]
+PASS: HTTPS to HTTP Insecure Transition in Form Post [10042]
+PASS: User Controllable JavaScript Event (XSS) [10043]
+PASS: Big Redirect Detected (Potential Sensitive Information Leak) [10044]
+PASS: Retrieved from Cache [10050]
+PASS: X-ChromeLogger-Data (XCOLD) Header Information Leak [10052]
+PASS: Cookie without SameSite Attribute [10054]
+PASS: CSP [10055]
+PASS: X-Debug-Token Information Leak [10056]
+PASS: Username Hash Found [10057]
+PASS: X-AspNet-Version Response Header [10061]
+PASS: PII Disclosure [10062]
+PASS: Timestamp Disclosure [10096]
+PASS: Hash Disclosure [10097]
+PASS: Cross-Domain Misconfiguration [10098]
+PASS: Source Code Disclosure [10099]
+PASS: Weak Authentication Method [10105]
+PASS: Reverse Tabnabbing [10108]
+PASS: Modern Web Application [10109]
+PASS: Dangerous JS Functions [10110]
+PASS: Authentication Request Identified [10111]
+PASS: Session Management Response Identified [10112]
+PASS: Verification Request Identified [10113]
+PASS: Script Served From Malicious Domain (polyfill) [10115]
+PASS: ZAP is Out of Date [10116]
+PASS: Private IP Disclosure [2]
+PASS: Session ID in URL Rewrite [3]
+PASS: Script Passive Scan Rules [50001]
+PASS: Stats Passive Scan Rule [50003]
+PASS: Insecure JSF ViewState [90001]
+PASS: Java Serialization Object [90002]
+PASS: Sub Resource Integrity Attribute Missing [90003]
+PASS: Charset Mismatch [90011]
+PASS: Application Error Disclosure [90022]
+PASS: WSDL File Detection [90030]
+PASS: Loosely Scoped Cookie [90033]
+WARN-NEW: Missing Anti-clickjacking Header [10020] x 5 
+	http://127.0.0.1:8080 (200 OK)
+	http://127.0.0.1:8080/ (200 OK)
+	http://127.0.0.1:8080/keys/8697125BD44E5B9116E289BE74077B355BA11B84 (200 OK)
+	http://127.0.0.1:8080/keys/C41B064F1527DB2C063C0AE8704117DE96AC211A (200 OK)
+	http://127.0.0.1:8080/revoke (200 OK)
+WARN-NEW: X-Content-Type-Options Header Missing [10021] x 5 
+	http://127.0.0.1:8080 (200 OK)
+	http://127.0.0.1:8080/ (200 OK)
+	http://127.0.0.1:8080/keys/8697125BD44E5B9116E289BE74077B355BA11B84 (200 OK)
+	http://127.0.0.1:8080/keys/C41B064F1527DB2C063C0AE8704117DE96AC211A (200 OK)
+	http://127.0.0.1:8080/revoke (200 OK)
+WARN-NEW: Information Disclosure - Sensitive Information in URL [10024] x 1 
+	http://127.0.0.1:8080/keys?callsign=ZAP&discord_id=ZAP&dmr_id=1&email=zaproxy%40example.com&fingerprint=ZAP&first_name=ZAP&fluxer_id=ZAP&irc_id=ZAP&last_name=ZAP&per_page=25 (429 Too Many Requests)
+WARN-NEW: Content Security Policy (CSP) Header Not Set [10038] x 5 
+	http://127.0.0.1:8080 (200 OK)
+	http://127.0.0.1:8080/ (200 OK)
+	http://127.0.0.1:8080/keys/8697125BD44E5B9116E289BE74077B355BA11B84 (200 OK)
+	http://127.0.0.1:8080/keys/C41B064F1527DB2C063C0AE8704117DE96AC211A (200 OK)
+	http://127.0.0.1:8080/revoke (200 OK)
+WARN-NEW: Non-Storable Content [10049] x 6 
+	http://127.0.0.1:8080/keys/900D46A4773A61215EA928BF7DD96935A6172B06 (429 Too Many Requests)
+	http://127.0.0.1:8080/keys/AD7721BAAAC824F0BBF17AC48D9E1B236591FA5C (429 Too Many Requests)
+	http://127.0.0.1:8080/keys/BB30949DF5A54AD362E203428302B9818AF4F2D5 (429 Too Many Requests)
+	http://127.0.0.1:8080/keys/DB5A022A39DC09A2FA759259409FC6A8CFCC81A0 (429 Too Many Requests)
+	http://127.0.0.1:8080/robots.txt (429 Too Many Requests)
+WARN-NEW: Permissions Policy Header Not Set [10063] x 5 
+	http://127.0.0.1:8080 (200 OK)
+	http://127.0.0.1:8080/ (200 OK)
+	http://127.0.0.1:8080/keys/8697125BD44E5B9116E289BE74077B355BA11B84 (200 OK)
+	http://127.0.0.1:8080/keys/C41B064F1527DB2C063C0AE8704117DE96AC211A (200 OK)
+	http://127.0.0.1:8080/revoke (200 OK)
+WARN-NEW: Absence of Anti-CSRF Tokens [10202] x 2 
+	http://127.0.0.1:8080/revoke (200 OK)
+	http://127.0.0.1:8080/submit (200 OK)
+WARN-NEW: Cross-Origin-Embedder-Policy Header Missing or Invalid [90004] x 9 
+	http://127.0.0.1:8080 (200 OK)
+	http://127.0.0.1:8080/ (200 OK)
+	http://127.0.0.1:8080/keys/8697125BD44E5B9116E289BE74077B355BA11B84 (200 OK)
+	http://127.0.0.1:8080 (200 OK)
+	http://127.0.0.1:8080/ (200 OK)
+FAIL-NEW: 0	FAIL-INPROG: 0	WARN-NEW: 8	WARN-INPROG: 0	INFO: 0	IGNORE: 0	PASS: 59

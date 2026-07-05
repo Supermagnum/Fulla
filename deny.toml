@@ -1,0 +1,41 @@
+# cargo-deny configuration (https://embarkstudios.github.io/cargo-deny/)
+# Run: cargo deny check
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+yanked = "deny"
+unmaintained = "all"
+unsound = "all"
+ignore = [
+    { id = "RUSTSEC-2023-0071", reason = "rsa v0.9.10 via sequoia-openpgp only (not TLS). Fulla server paths use RsaPublicKey.verify (signature check) on attacker-submitted public certs; Marvin requires private-key decrypt/sign timing oracle — no Fulla src/ call to sign_backend/decrypt_backend/SecretParts/into_keypair. Verified 2026-07-05." },
+    { id = "RUSTSEC-2025-0134", reason = "transitive via TLS stack; tracked upstream migration" },
+    { id = "RUSTSEC-2026-0190", reason = "anyhow downcast_mut unsound; Fulla does not use downcast_mut on anyhow errors" },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "BSL-1.0",
+    "LGPL-2.0-or-later",
+    "GPL-3.0-or-later",
+    "GPL-3.0",
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.8
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"

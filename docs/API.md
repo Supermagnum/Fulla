@@ -376,7 +376,7 @@ Applies to **POST** `/api/v1/keys`, `/api/v1/keys/revoke`, and form POST equival
 | Variable | Default | Scope |
 |----------|---------|--------|
 | `KEYSERVER_RATE_LIMIT_SUBMISSIONS` | `5` | Per source IP, rolling hour |
-| `KEYSERVER_RATE_LIMIT_SUBMISSIONS_GLOBAL` | (off) | Optional global hourly cap on mutations |
+| `KEYSERVER_RATE_LIMIT_SUBMISSIONS_GLOBAL` | `300` | Global hourly cap on POST submit/revoke (`0` disables). Default on since v0.1 hardening round 12 |
 | `KEYSERVER_RATE_LIMIT_READS` | `1200` | Per source IP on `GET /`, `/keys`, `/keys/{fp}`, form pages. Set `0` to disable |
 | `KEYSERVER_RATE_LIMIT_READS_GLOBAL` | (off) | Optional global hourly cap on those GET paths |
 

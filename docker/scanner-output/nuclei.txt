@@ -1,0 +1,8 @@
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+Trying to pull docker.io/projectdiscovery/nuclei:latest...
+Getting image source signatures
+Copying blob sha256:6bf3cb73ca8ed50320bc7a6e0572b7e594b7ac1afaea4b87b179d64d8f477bd1
+Copying blob sha256:55afa1ecc21d2bb5e5045f32dafee56272ffd89860bac26f6c32123439af26a4
+Copying blob sha256:9f0a9e5913052789d4ebabb665995cb4e2bb583ee2503fac276048ab380f9367
+Copying config sha256:583fb6f8f30dd4b36562fdb2e7a30e79895e56b475e5ba943f6aca7ff96019c9
+Writing manifest to image destination

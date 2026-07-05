@@ -11,8 +11,10 @@ use sequoia_openpgp::packet::Signature;
 use sequoia_openpgp::parse::Parse;
 use sequoia_openpgp::policy::StandardPolicy;
 use sequoia_openpgp::serialize::Serialize as PgpSerialize;
-use sequoia_openpgp::types::{Curve, ReasonForRevocation, RevocationStatus};
-use sequoia_openpgp::Cert;
+use sequoia_openpgp::types::{Curve, ReasonForRevocation, RevocationStatus, SignatureType};
+use sequoia_openpgp::{Cert, Packet, PacketPile};
+
+use crate::config::Config;
 
 #[derive(Debug)]
 pub struct ParsedCert {
@@ -23,19 +25,63 @@ pub struct ParsedCert {
     pub emails: Vec<String>,
 }
 
-const MAX_UPLOAD: usize = 128 * 1024;
+/// Structural limits against SKS-poisoning-style oversized certificates.
+///
+/// Defaults are conservative relative to normal keys and inspired by public
+/// keyserver operator practice (Hockeypuck `max_key_parts`, Hagrid rejection
+/// of certificates with excessive signature counts on a User ID).
+#[derive(Clone, Copy, Debug)]
+pub struct CertPolicy {
+    pub max_upload_bytes: usize,
+    pub max_userids: u32,
+    pub max_keys: u32,
+    pub max_uid_self_signatures: u32,
+}
+
+impl CertPolicy {
+    pub fn from_config(cfg: &Config) -> Self {
+        Self {
+            max_upload_bytes: cfg.keyserver_max_key_upload_bytes,
+            max_userids: cfg.keyserver_max_cert_userids,
+            max_keys: cfg.keyserver_max_cert_keys,
+            max_uid_self_signatures: cfg.keyserver_max_uid_self_signatures,
+        }
+    }
+
+    /// High limits for unit tests and generated minimal certificates.
+    pub fn permissive() -> Self {
+        Self {
+            max_upload_bytes: 128 * 1024,
+            max_userids: 256,
+            max_keys: 256,
+            max_uid_self_signatures: 256,
+        }
+    }
+}
 
 fn hardware_reject<D: Display>(name: D) -> anyhow::Error {
     anyhow!("Algorithm {} is not supported by Galdralag hardware.", name)
 }
 
-pub fn parse_and_validate(armored: &str, submitted_email: &str) -> Result<ParsedCert> {
+pub fn parse_and_validate(
+    armored: &str,
+    submitted_email: &str,
+    policy: &CertPolicy,
+) -> Result<ParsedCert> {
     let trimmed = armored.trim();
-    if trimmed.len() > MAX_UPLOAD {
-        return Err(anyhow!("Key material exceeds {} bytes.", MAX_UPLOAD));
+    if trimmed.len() > policy.max_upload_bytes {
+        return Err(anyhow!(
+            "Key material exceeds {} bytes.",
+            policy.max_upload_bytes
+        ));
     }
 
+    check_raw_packet_structure(trimmed.as_bytes(), policy)?;
+
     let cert = Cert::from_bytes(trimmed.as_bytes()).context("Invalid OpenPGP certificate")?;
+
+    check_cert_structure(&cert, policy)?;
+    policy_check_keys(&cert)?;
 
     let mut buf = Vec::new();
     {
@@ -50,12 +96,11 @@ pub fn parse_and_validate(armored: &str, submitted_email: &str) -> Result<Parsed
 
     let fingerprint = cert.fingerprint().to_hex();
 
-    policy_check_keys(&cert)?;
     deny_self_revoked(&cert)?;
 
-    let mut emails = Vec::new();
+    let mut emails: Vec<String> = Vec::new();
     for uid in cert.userids() {
-        if let Ok(Some(em)) = uid.email_normalized() {
+        if let Ok(Some(em)) = uid.userid().email_normalized() {
             emails.push(em);
         }
     }
@@ -78,6 +123,135 @@ pub fn parse_and_validate(armored: &str, submitted_email: &str) -> Result<Parsed
         armored: normal_armor.trim().to_string(),
         emails,
     })
+}
+
+/// Structural limits on the raw OpenPGP packet stream (pre-`Cert` deduplication).
+///
+/// Real SKS-poison certificates flood a User ID with many distinct self-signature packets.
+/// Sequoia's `Cert` parser deduplicates them during amalgamation, so limits must be
+/// enforced on the import stream, matching Hockeypuck/Hagrid-style rejection.
+fn check_raw_packet_structure(bytes: &[u8], policy: &CertPolicy) -> Result<()> {
+    let pile = PacketPile::from_bytes(bytes).context("Invalid OpenPGP packet stream")?;
+    let packets: Vec<Packet> = pile.into_children().collect();
+
+    let mut uid_count = 0u32;
+    let mut key_count = 0u32;
+    let mut total_sigs = 0u32;
+    let mut uid_index = 0u32;
+    let mut uid_self_sigs = 0u32;
+    let mut in_uid_binding = false;
+
+    for p in &packets {
+        match p {
+            Packet::UserID(_) => {
+                uid_count += 1;
+                uid_index = uid_count;
+                uid_self_sigs = 0;
+                in_uid_binding = true;
+            }
+            Packet::PublicKey(_)
+            | Packet::PublicSubkey(_)
+            | Packet::SecretKey(_)
+            | Packet::SecretSubkey(_) => {
+                key_count += 1;
+                in_uid_binding = false;
+            }
+            Packet::Signature(sig) => {
+                total_sigs += 1;
+                if in_uid_binding && sig.typ() == SignatureType::PositiveCertification {
+                    uid_self_sigs += 1;
+                    if uid_self_sigs > policy.max_uid_self_signatures {
+                        return Err(anyhow!(
+                            "User ID #{} has {uid_self_sigs} self-signatures in import stream (maximum {}).",
+                            uid_index,
+                            policy.max_uid_self_signatures
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if uid_count == 0 {
+        return Err(anyhow!("Certificate has no User IDs."));
+    }
+    if uid_count > policy.max_userids {
+        return Err(anyhow!(
+            "Certificate has {uid_count} User IDs (maximum {}).",
+            policy.max_userids
+        ));
+    }
+
+    let max_total_sigs = policy
+        .max_uid_self_signatures
+        .saturating_mul(policy.max_userids);
+    if total_sigs > max_total_sigs {
+        return Err(anyhow!(
+            "Certificate has {total_sigs} signatures in import stream (maximum {max_total_sigs})."
+        ));
+    }
+
+    if key_count > policy.max_keys {
+        return Err(anyhow!(
+            "Certificate has {key_count} key components (maximum {}).",
+            policy.max_keys
+        ));
+    }
+
+    Ok(())
+}
+
+fn check_cert_structure(cert: &Cert, policy: &CertPolicy) -> Result<()> {
+    let uid_count = cert.userids().count() as u32;
+    if uid_count == 0 {
+        return Err(anyhow!("Certificate has no User IDs."));
+    }
+    if uid_count > policy.max_userids {
+        return Err(anyhow!(
+            "Certificate has {uid_count} User IDs (maximum {}).",
+            policy.max_userids
+        ));
+    }
+
+    for (i, uid) in cert.userids().enumerate() {
+        let sig_count = uid.self_signatures().count() as u32;
+        if sig_count > policy.max_uid_self_signatures {
+            return Err(anyhow!(
+                "User ID #{} has {sig_count} self-signatures (maximum {}).",
+                i + 1,
+                policy.max_uid_self_signatures
+            ));
+        }
+    }
+
+    // SKS-style flooding attaches many signature packets; cap total count.
+    let total_sigs = count_signature_packets(cert);
+    let max_total_sigs = policy
+        .max_uid_self_signatures
+        .saturating_mul(policy.max_userids);
+    if total_sigs > max_total_sigs {
+        return Err(anyhow!(
+            "Certificate has {total_sigs} signatures (maximum {max_total_sigs})."
+        ));
+    }
+
+    let key_count = cert.keys().count() as u32;
+    if key_count > policy.max_keys {
+        return Err(anyhow!(
+            "Certificate has {key_count} key components (maximum {}).",
+            policy.max_keys
+        ));
+    }
+
+    Ok(())
+}
+
+fn count_signature_packets(cert: &Cert) -> u32 {
+    cert.clone()
+        .into_packets()
+        .filter(|p| matches!(p, Packet::Signature(_)))
+        .count() as u32
 }
 
 fn normalize_email_local(email: &str) -> Cow<'_, str> {
@@ -122,6 +296,7 @@ fn curve_display(c: &Curve) -> String {
         Curve::Ed25519 => "Ed25519".into(),
         Curve::Cv25519 => "X25519".into(),
         Curve::Unknown(oid) => format!("curve(OID {:?})", oid),
+        _ => "unsupported post-quantum or experimental curve".into(),
     }
 }
 
@@ -175,9 +350,17 @@ pub fn check_public_mpis(mpis: &MpiPk) -> Result<()> {
 pub fn apply_and_verify_revocation(
     stored_cert: &Cert,
     revocation_armored: &str,
+    policy: &CertPolicy,
 ) -> Result<Option<String>> {
-    let rev = Cert::from_bytes(revocation_armored.trim().as_bytes())
-        .context("Invalid revocation certificate")?;
+    let trimmed = revocation_armored.trim();
+    if trimmed.len() > policy.max_upload_bytes {
+        return Err(anyhow!(
+            "Revocation material exceeds {} bytes.",
+            policy.max_upload_bytes
+        ));
+    }
+
+    let rev = Cert::from_bytes(trimmed.as_bytes()).context("Invalid revocation certificate")?;
 
     let merged = stored_cert
         .clone()
@@ -236,6 +419,10 @@ mod tests {
     use sequoia_openpgp::cert::CertBuilder;
     use sequoia_openpgp::crypto::mpi;
 
+    fn policy() -> CertPolicy {
+        CertPolicy::permissive()
+    }
+
     #[test]
     fn reject_rsa_below_2048_bits() {
         let mp = MpiPk::RSA {
@@ -264,7 +451,7 @@ mod tests {
         cert.serialize(&mut w).unwrap();
         w.finalize().unwrap();
         let arm = String::from_utf8(buf).unwrap();
-        let p = parse_and_validate(&arm, "u@example.com").expect("ok");
+        let p = parse_and_validate(&arm, "u@example.com", &policy()).expect("ok");
         assert_eq!(p.emails, vec!["u@example.com".to_string()]);
         assert_eq!(p.fingerprint.len(), 40);
     }
@@ -283,7 +470,7 @@ mod tests {
         cert.serialize(&mut w).unwrap();
         w.finalize().unwrap();
         let arm = String::from_utf8(buf).unwrap();
-        assert!(parse_and_validate(&arm, "other@example.com").is_err());
+        assert!(parse_and_validate(&arm, "other@example.com", &policy()).is_err());
     }
 
     #[test]
@@ -297,10 +484,10 @@ mod tests {
         let revoked = cert.insert_packets(rev).expect("insert rev");
         let mut buf = Vec::new();
         let mut w = armor::Writer::new(&mut buf, armor::Kind::PublicKey).unwrap();
-        revoked.serialize(&mut w).unwrap();
+        revoked.0.serialize(&mut w).unwrap();
         w.finalize().unwrap();
         let arm = String::from_utf8(buf).unwrap();
-        assert!(parse_and_validate(&arm, "u@example.com").is_err());
+        assert!(parse_and_validate(&arm, "u@example.com", &policy()).is_err());
     }
 
     #[test]
@@ -317,8 +504,78 @@ mod tests {
         cert.serialize(&mut w).unwrap();
         w.finalize().unwrap();
         let arm = String::from_utf8(buf).unwrap();
-        let err = parse_and_validate(&arm, "u@example.com").expect_err("P-521 must be rejected");
+        let err = parse_and_validate(&arm, "u@example.com", &policy()).expect_err("P-521 must be rejected");
         let s = format!("{err:#}");
         assert!(s.contains("is not supported by Galdralag hardware"), "{s}");
+    }
+
+    #[test]
+    fn strict_policy_rejects_many_userids() {
+        let mut builder = CertBuilder::new()
+            .set_cipher_suite(sequoia_openpgp::cert::CipherSuite::Cv25519);
+        for i in 0..20 {
+            builder = builder.add_userid(format!("U{i} <u{i}@example.com>"));
+        }
+        let cert = builder.add_signing_subkey().generate().expect("gen").0;
+        let mut buf = Vec::new();
+        let mut w = armor::Writer::new(&mut buf, armor::Kind::PublicKey).unwrap();
+        cert.serialize(&mut w).unwrap();
+        w.finalize().unwrap();
+        let arm = String::from_utf8(buf).unwrap();
+        let strict = CertPolicy {
+            max_upload_bytes: 128 * 1024,
+            max_userids: 16,
+            max_keys: 32,
+            max_uid_self_signatures: 32,
+        };
+        let err = parse_and_validate(&arm, "u0@example.com", &strict).expect_err("too many uids");
+        assert!(err.to_string().contains("User IDs"), "{}", err);
+    }
+
+    #[test]
+    fn strict_policy_rejects_many_keys() {
+        let mut builder = CertBuilder::new()
+            .set_cipher_suite(sequoia_openpgp::cert::CipherSuite::Cv25519)
+            .add_userid("T <u@example.com>");
+        for _ in 0..40 {
+            builder = builder.add_signing_subkey();
+        }
+        let cert = builder.generate().expect("gen").0;
+        let mut buf = Vec::new();
+        let mut w = armor::Writer::new(&mut buf, armor::Kind::PublicKey).unwrap();
+        cert.serialize(&mut w).unwrap();
+        w.finalize().unwrap();
+        let arm = String::from_utf8(buf).unwrap();
+        let strict = CertPolicy {
+            max_upload_bytes: 128 * 1024,
+            max_userids: 16,
+            max_keys: 32,
+            max_uid_self_signatures: 32,
+        };
+        let err = parse_and_validate(&arm, "u@example.com", &strict).expect_err("too many keys");
+        assert!(err.to_string().contains("key components"), "{}", err);
+    }
+
+    #[test]
+    fn strict_policy_rejects_sks_uid_selfsig_flood() {
+        const FIXTURE: &str =
+            include_str!("../adversarial-tests/fixtures/sks_uid_selfsig_flood.asc");
+        let strict = CertPolicy {
+            max_upload_bytes: 128 * 1024,
+            max_userids: 16,
+            max_keys: 32,
+            max_uid_self_signatures: 32,
+        };
+        let err = parse_and_validate(FIXTURE, "sks-poison@adv.test", &strict)
+            .expect_err("SKS poison fixture must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("self-signatures"),
+            "expected per-UID self-signature cap, got: {msg}"
+        );
+        assert!(
+            msg.contains("import stream"),
+            "raw packet stream check must fire before Cert dedup: {msg}"
+        );
     }
 }

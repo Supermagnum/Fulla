@@ -16,7 +16,7 @@ Fulla is a single Rust binary (`fulla`) built on **Axum** + **SQLx (SQLite)**. I
 
 Every new key registration (first-time or replacement) goes through **mailbox confirmation**: rows live in `pending_submissions` until the recipient opens `/confirm/{token}`. Only then does the key appear in `keys` with `status = 'active'`.
 
-There is **no client authentication** on push/fetch/revoke today; trust comes from OpenPGP validation, email confirmation, per-IP (and optional global) rate limits on reads and mutations, and network placement.
+There is **no client authentication** on fetch/confirm by default; optional **`KEYSERVER_MUTATION_AUTH_SECRET`** gates POST submit/revoke for closed registries. Trust also comes from OpenPGP validation (including SKS-poisoning structural limits), email confirmation, per-IP (and optional global) rate limits, and network placement.
 
 ---
 
@@ -32,6 +32,7 @@ Fulla/
 │   ├── openpgp.rs        # sequoia-openpgp parse/validate/revoke
 │   ├── mail.rs           # Outbound SMTP (lettre)
 │   ├── templates.rs      # Minijinja loader
+│   ├── auth.rs             # Optional Bearer auth on mutation routes
 │   ├── email_normalize.rs # Mailbox identity canonicalization (case + confusables)
 │   ├── rate_limit.rs     # Per-IP and optional global rate limits (mutate + read)
 │   ├── handlers/
@@ -263,8 +264,10 @@ Environment variables (required unless noted):
 | Function | Description |
 |----------|-------------|
 | `crsql_activate_keys` | Enable CRDT on `keys` |
-| `pull_crsql_changes_since`, `apply_crsql_wire_rows` | Change feed exchange |
-| `resolve_mesh_email_conflicts` | Post-sync email uniqueness |
+| `pull_crsql_changes_since`, `apply_crsql_wire_rows` | Change feed exchange; apply calls `observe_keys_from_wire_rows` for `first_seen_at` |
+| `record_local_key_confirmation` | Set only from `confirm.rs` after local mailbox confirm |
+| `record_key_first_seen_if_absent`, `observe_keys_from_wire_rows` | Local observation clock for mesh-only conflict tier |
+| `resolve_mesh_email_conflicts`, `mesh_conflict_pick_winner` | Post-sync email uniqueness (local-confirm / first-seen) |
 | `mesh_peer_states`, `update_mesh_peer_progress` | Peer cursor tracking |
 | `upsert_mesh_peers_from_config`, `prune_mesh_peers` | Config-driven peer list |
 
@@ -274,7 +277,7 @@ All queries use bound parameters (sqlx); fingerprint path traversal returns 404 
 
 | Function | Description |
 |----------|-------------|
-| `parse_and_validate(armored, email)` | Parse cert, enforce Galdralag hardware policy, match submitted email to a User ID (`eq_ignore_ascii_case`) |
+| `parse_and_validate(armored, email, policy)` | Parse cert, enforce Galdralag hardware policy + structural limits (`CertPolicy`), match email to User ID |
 | `policy_check_keys` | Reject RSA, Ed25519, Brainpool P-512, etc.; allow Cv25519, NIST P-256/P-384, Brainpool P-384 |
 | `deny_self_revoked` | Reject certs with revocation signatures |
 | `apply_and_verify_revocation` | Apply rev cert to stored cert; extract reason |
@@ -308,7 +311,7 @@ Used by `insert_pending` and `has_pending_for_email`. Does **not** rewrite ASCII
 
 Uses `ConnectInfo<SocketAddr>`; falls back to loopback if missing.
 
-Env: `KEYSERVER_RATE_LIMIT_SUBMISSIONS` (default 5), `KEYSERVER_RATE_LIMIT_READS` (default 1200; `0` disables), optional `KEYSERVER_RATE_LIMIT_SUBMISSIONS_GLOBAL` / `KEYSERVER_RATE_LIMIT_READS_GLOBAL`.
+Env: `KEYSERVER_RATE_LIMIT_SUBMISSIONS` (default 5), `KEYSERVER_RATE_LIMIT_READS` (default 1200; `0` disables), `KEYSERVER_RATE_LIMIT_SUBMISSIONS_GLOBAL` (default **300**/hour; `0` disables), optional `KEYSERVER_RATE_LIMIT_READS_GLOBAL`.
 
 ### `templates.rs`
 
@@ -338,7 +341,7 @@ Email templates receive sidecar JSON (callsign, organisation, role, badge_number
 
 ## Database schema
 
-Migrations run in order (`001` … `008`):
+Migrations run in order (`001` … `010`):
 
 | Migration | Adds |
 |-----------|------|
@@ -350,6 +353,8 @@ Migrations run in order (`001` … `008`):
 | `006_mesh_peers.sql` | Mesh peer state table |
 | `007_mesh_peer_push_cursor.sql` | Push cursor column |
 | `008_contact_org_role_note.sql` | `organisation`, `role`, `note`, `badge_number` |
+| `009_pending_email_canonical.sql` | Canonical email column for homoglyph defense |
+| `010_key_local_provenance.sql` | `key_local_confirmations`, `key_local_first_seen` (local-only, not CR-SQLite) |
 
 `keys.status`: `'active'` or `'revoked'`. Pending rows expire after 72 hours (set in `pending_expires_at_rfc3339`).
 
@@ -363,11 +368,15 @@ Configured via `FULLA_CONFIG` TOML, validated in `ReplicationConfig::validate()`
 
 When `replication.mesh.enabled`:
 
-- Loads CR-SQLite `.so` from `crsqlite_extension_path`.
-- Spawns HTTPS (or HTTP) sync API on `sync_api_port` with bearer auth (`sync_authorization_secret`).
-- Endpoints exchange CR-SQLite wire-format changes; cron pulls from configured peers (max 13 peers).
-- `resolve_mesh_email_conflicts` after apply — keeps one active key per normalized email across nodes.
+- Loads CR-SQLite `.so` from `crsqlite_extension_path` after `extension_integrity::validate_native_extension` (permission + optional SHA-256 pin).
+- Spawns HTTPS (or HTTP) sync API on `sync_api_port` with constant-time bearer auth (`sync_authorization_secret`, min 16 chars).
+- **`GET /sync/changes`** — paginated (`limit`, `protocol_version=2` query); response headers `X-DB-Version`, `X-Mesh-Protocol-Version`, `X-Changes-Truncated`. Peer cron pages until batch smaller than limit. **Fail closed:** full page from pre-v2 peer aborts sync (`TruncationBlockedError`, cursor unchanged). Small batches allowed during staged rollout.
+- **`POST /sync/apply`** — batched apply capped by `sync_max_changes_per_request`; `RequestBodyLimitLayer` (`sync_max_body_bytes`); optional global rate limit.
+- Cron pulls/pushes in pages from configured peers (max 13 peers).
+- `resolve_mesh_email_conflicts` after apply — keeps one active key per normalized email using local-confirm / first-seen precedence (`key_local_confirmations`, `key_local_first_seen`); revokes others as `mesh_conflict`
 - `dns.rs` resolves `dynamic_dns_host` tokens in peer addresses.
+
+**Peer compatibility:** JSON wire format unchanged; all nodes must page. Mixed versions that ignore truncation headers could miss changes.
 
 ### Litestream (`replication/litestream.rs`)
 
@@ -423,8 +432,8 @@ Migration `009_pending_email_canonical.sql` adds `email_canonical` to `pending_s
 |------|------------|
 | Add API field to submit/fetch | `models.rs`, `submit.rs` validation, `db.rs` insert/list, migration, templates |
 | Change confirmation email text | `templates/email/*.txt`, `enqueue_pending_confirmation` context |
-| Tighten OpenPGP policy | `openpgp.rs` `policy_check_keys` |
-| Add auth to an endpoint | New middleware or handler checks in `handlers/`; no existing pattern |
+| Add auth to an endpoint | `auth.rs` (`mutation_auth_guard`), `main.rs` mutate router |
+| Tighten OpenPGP policy / SKS limits | `openpgp.rs` `CertPolicy`, `check_cert_structure`, `config.rs` `KEYSERVER_MAX_CERT_*` |
 | Fix pending duplicate logic | `email_normalize.rs`, `db::has_pending_for_email`, `enqueue_pending_confirmation` |
 | Mesh sync behaviour | `replication/mesh.rs`, `db.rs` CR-SQLite helpers |
 | Rate limit scope | `main.rs` read/mutate routers, `rate_limit.rs`, `config.rs` |

@@ -1,12 +1,18 @@
 //! Shared helpers for HTTP adversarial tests against a running Fulla instance.
 
+pub mod poison_cert;
+
 use std::time::Duration;
+
+use std::convert::TryFrom;
 
 use anyhow::{Context, Result};
 use reqwest::Client;
 use sequoia_openpgp::armor;
 use sequoia_openpgp::cert::CertBuilder;
 use sequoia_openpgp::cert::CipherSuite;
+use sequoia_openpgp::packet::Packet;
+use sequoia_openpgp::Cert;
 use sequoia_openpgp::serialize::Serialize as PgpSerialize;
 
 #[derive(Clone)]
@@ -59,18 +65,38 @@ impl Env {
 }
 
 pub fn armored_cv25519(email: &str) -> Result<String> {
-    let cert = CertBuilder::new()
+    let (cert, _rev) = armored_cv25519_with_revocation(email)?;
+    Ok(cert)
+}
+
+/// Returns `(armored_public_key, armored_revocation_certificate)`.
+pub fn armored_cv25519_with_revocation(email: &str) -> Result<(String, String)> {
+    let (cert, rev) = CertBuilder::new()
         .set_cipher_suite(CipherSuite::Cv25519)
         .add_userid(format!("Test <{email}>"))
         .add_signing_subkey()
         .generate()
-        .context("cert gen")?
-        .0;
-    let mut buf = Vec::new();
-    let mut w = armor::Writer::new(&mut buf, armor::Kind::PublicKey).context("armor")?;
+        .context("cert gen")?;
+
+    let mut pk_buf = Vec::new();
+    let mut w = armor::Writer::new(&mut pk_buf, armor::Kind::PublicKey).context("armor")?;
     cert.serialize(&mut w).context("serialize")?;
     w.finalize().context("finalize")?;
-    Ok(String::from_utf8(buf).context("utf8")?)
+    let pk = String::from_utf8(pk_buf).context("utf8")?;
+
+    let rev_cert = Cert::try_from(vec![
+        cert.primary_key().key().clone().into(),
+        Packet::from(rev),
+    ])
+    .context("rev cert")?;
+
+    let mut rev_buf = Vec::new();
+    let mut w = armor::Writer::new(&mut rev_buf, armor::Kind::PublicKey).context("armor rev")?;
+    rev_cert.serialize(&mut w).context("serialize rev")?;
+    w.finalize().context("finalize rev")?;
+    let rev_armored = String::from_utf8(rev_buf).context("utf8 rev")?;
+
+    Ok((pk, rev_armored))
 }
 
 pub fn unique_email(prefix: &str) -> String {

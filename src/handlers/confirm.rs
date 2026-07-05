@@ -140,6 +140,10 @@ pub(crate) async fn run_confirm(app: &AppState, token: &str) -> Result<(), Confi
     .await
     .map_err(ConfirmError::Internal)?;
 
+    db::record_local_key_confirmation(&app.pool, &p.new_fingerprint)
+        .await
+        .map_err(ConfirmError::Internal)?;
+
     db::delete_pending(&app.pool, token)
         .await
         .map_err(ConfirmError::Internal)?;

@@ -338,6 +338,10 @@ fn push_key_filter_clauses(q: &mut String, binds: &mut Vec<BindArg>, filter: &Ke
             binds.push(BindArg::S(v.clone()));
         }
     }
+
+    if !filter.include_revoked {
+        q.push_str(" AND status = 'active'");
+    }
 }
 
 pub async fn count_keys(pool: &SqlitePool, filter: &KeyFilter) -> Result<i64> {
@@ -440,7 +444,9 @@ pub async fn crsql_site_id_bytes(pool: &SqlitePool) -> anyhow::Result<Vec<u8>> {
 pub async fn pull_crsql_changes_since(
     pool: &SqlitePool,
     since_db_version: i64,
+    limit: usize,
 ) -> anyhow::Result<(Vec<CrsqlWireChange>, i64)> {
+    let cap = limit.max(1) as i64;
     let rows = sqlx::query(
         r#"
         SELECT CAST("table" AS TEXT) AS tbl,
@@ -455,9 +461,11 @@ pub async fn pull_crsql_changes_since(
           FROM crsql_changes
          WHERE CAST(db_version AS INTEGER) > ?
          ORDER BY CAST(db_version AS INTEGER) ASC
+         LIMIT ?
         "#,
     )
     .bind(since_db_version)
+    .bind(cap)
     .fetch_all(pool)
     .await?;
 
@@ -492,7 +500,9 @@ pub async fn pull_own_site_changes_since(
     pool: &SqlitePool,
     since_db_version: i64,
     site_id: &[u8],
+    limit: usize,
 ) -> anyhow::Result<Vec<CrsqlWireChange>> {
+    let cap = limit.max(1) as i64;
     let rows = sqlx::query(
         r#"
         SELECT CAST("table" AS TEXT) AS tbl,
@@ -508,10 +518,12 @@ pub async fn pull_own_site_changes_since(
          WHERE CAST(db_version AS INTEGER) > ?
            AND site_id = ?
          ORDER BY CAST(db_version AS INTEGER) ASC
+         LIMIT ?
         "#,
     )
     .bind(since_db_version)
     .bind(site_id)
+    .bind(cap)
     .fetch_all(pool)
     .await?;
 
@@ -545,6 +557,9 @@ pub async fn apply_crsql_wire_rows(
     pool: &SqlitePool,
     rows: &[CrsqlWireChange],
 ) -> anyhow::Result<()> {
+    // Trust boundary: column values in replicated `keys` rows (including `submitted_at`)
+    // originate from the writing node's local confirm path and are not re-stamped here.
+    // Post-apply `resolve_mesh_email_conflicts` must not use `submitted_at` for precedence.
     if rows.is_empty() {
         return Ok(());
     }
@@ -581,7 +596,177 @@ pub async fn apply_crsql_wire_rows(
         .await?;
     }
     tx.commit().await?;
+    observe_keys_from_wire_rows(pool, rows).await?;
     Ok(())
+}
+
+/// Record that this node completed GET `/confirm/{token}` for `fingerprint`.
+/// Must only be called from the local confirm handler — never from mesh apply.
+pub async fn record_local_key_confirmation(pool: &SqlitePool, fingerprint: &str) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        r#"INSERT INTO key_local_confirmations (fingerprint, confirmed_at)
+           VALUES (?, ?)
+           ON CONFLICT(fingerprint) DO NOTHING"#,
+    )
+    .bind(fingerprint)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    record_key_first_seen_if_absent(pool, fingerprint).await?;
+    Ok(())
+}
+
+/// First time this node observed `fingerprint` as active (confirm or mesh apply).
+pub async fn record_key_first_seen_if_absent(pool: &SqlitePool, fingerprint: &str) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    sqlx::query(
+        r#"INSERT OR IGNORE INTO key_local_first_seen (fingerprint, first_seen_at)
+           VALUES (?, ?)"#,
+    )
+    .bind(fingerprint)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+fn decode_crsql_rowid_pk(pk: &[u8]) -> Option<i64> {
+    if pk.is_empty() {
+        return None;
+    }
+    if pk.len() <= 8 {
+        let mut buf = [0u8; 8];
+        buf[(8 - pk.len())..].copy_from_slice(pk);
+        return Some(i64::from_be_bytes(buf));
+    }
+    None
+}
+
+/// After mesh apply, stamp first-seen for active keys touched by the batch.
+pub async fn observe_keys_from_wire_rows(
+    pool: &SqlitePool,
+    rows: &[CrsqlWireChange],
+) -> anyhow::Result<()> {
+    let mut key_ids = Vec::new();
+    for ch in rows {
+        if ch.table_name != "keys" {
+            continue;
+        }
+        let pk = B64
+            .decode(ch.pk_b64.trim())
+            .with_context(|| "pk_b64 decode in observe")?;
+        if let Some(id) = decode_crsql_rowid_pk(&pk) {
+            key_ids.push(id);
+        }
+    }
+    key_ids.sort_unstable();
+    key_ids.dedup();
+    for id in key_ids {
+        if let Some(fp) = sqlx::query_scalar::<_, String>(
+            "SELECT fingerprint FROM keys WHERE id = ? AND status = 'active'",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        {
+            record_key_first_seen_if_absent(pool, &fp).await?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeshConflictCandidate {
+    pub fingerprint: String,
+    /// Set only when this node ran `/confirm/{token}` locally (`key_local_confirmations`).
+    pub locally_confirmed_at: Option<String>,
+    /// Earliest local observation of this fingerprint as active on this node.
+    pub first_seen_at: Option<String>,
+}
+
+fn rfc3339_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    a.cmp(b)
+}
+
+/// Fingerprint-only tiebreak (gameable — ~50% success per keygen attempt vs a known victim fp).
+pub fn mesh_conflict_winner_fingerprint_only(fingerprints: &[String]) -> Option<String> {
+    fingerprints.iter().min_by(|a, b| {
+        a.to_ascii_lowercase()
+            .cmp(&b.to_ascii_lowercase())
+    }).cloned()
+}
+
+/// Pick the active key to keep after a mesh merge on **this node**.
+///
+/// Precedence:
+/// 1. Exactly one locally confirmed row (this node witnessed `/confirm/{token}`) wins outright.
+/// 2. If multiple locally confirmed (abnormal race on one node), earliest `confirmed_at`.
+/// 3. If none locally confirmed (replication-only on this node), earliest `first_seen_at`
+///    (local wall clock when this node first saw the key active — not mesh-writable).
+///
+/// Fingerprint is **not** used. An attacker with mesh inject-only access cannot set
+/// `key_local_confirmations` or backdate `key_local_first_seen` via `apply_crsql_wire_rows`.
+pub fn mesh_conflict_pick_winner(candidates: &[MeshConflictCandidate]) -> Option<String> {
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let locally_confirmed: Vec<&MeshConflictCandidate> = candidates
+        .iter()
+        .filter(|c| c.locally_confirmed_at.is_some())
+        .collect();
+
+    match locally_confirmed.len() {
+        1 => Some(locally_confirmed[0].fingerprint.clone()),
+        n if n >= 2 => locally_confirmed
+            .iter()
+            .min_by(|a, b| {
+                rfc3339_cmp(
+                    a.locally_confirmed_at.as_deref().unwrap_or(""),
+                    b.locally_confirmed_at.as_deref().unwrap_or(""),
+                )
+            })
+            .map(|c| c.fingerprint.clone()),
+        _ => candidates
+            .iter()
+            .min_by(|a, b| {
+                rfc3339_cmp(
+                    a.first_seen_at.as_deref().unwrap_or("\u{10ffff}"),
+                    b.first_seen_at.as_deref().unwrap_or("\u{10ffff}"),
+                )
+            })
+            .map(|c| c.fingerprint.clone()),
+    }
+}
+
+async fn load_mesh_conflict_candidates(
+    pool: &SqlitePool,
+    email_lower: &str,
+) -> Result<Vec<MeshConflictCandidate>> {
+    let rows = sqlx::query(
+        r#"SELECT k.fingerprint,
+                  lc.confirmed_at AS locally_confirmed_at,
+                  fs.first_seen_at
+             FROM keys k
+             LEFT JOIN key_local_confirmations lc ON lc.fingerprint = k.fingerprint
+             LEFT JOIN key_local_first_seen fs ON fs.fingerprint = k.fingerprint
+            WHERE k.status = 'active' AND LOWER(k.email) = LOWER(?)"#,
+    )
+    .bind(email_lower)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| {
+            Some(MeshConflictCandidate {
+                fingerprint: r.try_get(0).ok()?,
+                locally_confirmed_at: r.try_get(1).ok().flatten(),
+                first_seen_at: r.try_get(2).ok().flatten(),
+            })
+        })
+        .collect())
 }
 
 /// Resolve duplicate-active keys for one email introduced by concurrent mesh writes.
@@ -599,23 +784,19 @@ pub async fn resolve_mesh_email_conflicts(pool: &SqlitePool) -> anyhow::Result<u
     let mut revoked = 0u64;
 
     for lem in dup_emails {
-        let rows = sqlx::query(
-            r#"SELECT fingerprint, submitted_at FROM keys
-                WHERE status = 'active' AND LOWER(email) = LOWER(?)
-                ORDER BY submitted_at ASC"#,
-        )
-        .bind(&lem)
-        .fetch_all(pool)
-        .await?;
-
-        if rows.len() <= 1 {
+        let candidates = load_mesh_conflict_candidates(pool, &lem).await?;
+        if candidates.len() <= 1 {
             continue;
         }
 
-        let keep_fp: String = rows[0].try_get::<String, _>(0)?;
+        let Some(keep_fp) = mesh_conflict_pick_winner(&candidates) else {
+            continue;
+        };
 
-        for r in rows.into_iter().skip(1) {
-            let fp: String = r.try_get(0)?;
+        for fp in candidates.iter().map(|c| &c.fingerprint) {
+            if fp == &keep_fp {
+                continue;
+            }
             let _ = sqlx::query(
                 r#"UPDATE keys
                       SET status = 'revoked',
@@ -626,7 +807,7 @@ pub async fn resolve_mesh_email_conflicts(pool: &SqlitePool) -> anyhow::Result<u
                       AND status = 'active'"#,
             )
             .bind(&now)
-            .bind(&fp)
+            .bind(fp)
             .bind(&lem)
             .execute(pool)
             .await?;
@@ -635,7 +816,7 @@ pub async fn resolve_mesh_email_conflicts(pool: &SqlitePool) -> anyhow::Result<u
                 email = %lem,
                 kept = %keep_fp,
                 revoked = %fp,
-                "Mesh conflict resolved for email {}: kept {}, revoked {}",
+                "Mesh conflict resolved for email {}: kept {} (local-confirm / first-seen precedence), revoked {}",
                 lem,
                 keep_fp,
                 fp
@@ -736,38 +917,125 @@ pub async fn prune_mesh_peers(pool: &SqlitePool, keep_node_ids: &[String]) -> Re
 #[cfg(test)]
 mod mesh_conflict_tests {
     use super::*;
+    use base64::Engine;
     use sqlx::sqlite::SqlitePoolOptions;
 
-    #[tokio::test]
-    async fn resolve_duplicate_active_same_email_keeps_earliest_submitted() {
+    static B64: base64::engine::general_purpose::GeneralPurpose =
+        base64::engine::general_purpose::STANDARD;
+
+    async fn conflict_test_pool() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
             .await
             .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    fn candidate(fp: &str, confirmed: Option<&str>, first_seen: Option<&str>) -> MeshConflictCandidate {
+        MeshConflictCandidate {
+            fingerprint: fp.into(),
+            locally_confirmed_at: confirmed.map(str::to_string),
+            first_seen_at: first_seen.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn fingerprint_tiebreak_is_gameable_with_known_victim_fp() {
+        // Victim published fp via GET /keys?email=; attacker grinds until fp < victim (~2 tries avg).
+        let victim = "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC";
+        let attacker = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        assert!(
+            attacker < victim,
+            "attacker chose a lower hex fingerprint than victim"
+        );
+        assert_eq!(
+            mesh_conflict_winner_fingerprint_only(&[victim.into(), attacker.into()]).as_deref(),
+            Some(attacker),
+            "fingerprint-only tiebreak lets attacker win with trivial keygen"
+        );
+    }
+
+    #[test]
+    fn local_confirm_beats_replication_only_despite_lower_attacker_fp() {
+        let victim = candidate(
+            "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            Some("2024-06-01T12:00:00Z"),
+            Some("2024-06-01T12:00:00Z"),
+        );
+        let attacker = candidate(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            None,
+            Some("2020-01-01T00:00:00Z"),
+        );
+        assert_eq!(
+            mesh_conflict_pick_winner(&[victim, attacker]).as_deref(),
+            Some("CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"),
+            "locally confirmed row wins even when attacker has lower fp and earlier first_seen"
+        );
+    }
+
+    #[test]
+    fn both_locally_confirmed_uses_earliest_confirmed_at() {
+        let a = candidate(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            Some("2024-06-02T12:00:00Z"),
+            None,
+        );
+        let b = candidate(
+            "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            Some("2024-06-01T12:00:00Z"),
+            None,
+        );
+        assert_eq!(
+            mesh_conflict_pick_winner(&[a, b]).as_deref(),
+            Some("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"),
+            "when both locally confirmed, earliest confirmed_at wins (not fingerprint)"
+        );
+    }
+
+    #[test]
+    fn replication_only_uses_first_seen_not_fingerprint() {
+        let victim = candidate(
+            "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            None,
+            Some("2020-01-01T00:00:00Z"),
+        );
+        let attacker = candidate(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            None,
+            Some("2024-01-01T00:00:00Z"),
+        );
+        assert_eq!(
+            mesh_conflict_pick_winner(&[victim, attacker]).as_deref(),
+            Some("CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"),
+            "replication-only tier uses earliest local first_seen, not grindable fingerprint"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_keeps_locally_confirmed_over_mesh_only_attacker() {
+        let pool = conflict_test_pool().await;
 
         sqlx::query(
-            r#"CREATE TABLE keys (
-              fingerprint TEXT NOT NULL UNIQUE,
-              armored_key TEXT NOT NULL,
-              email TEXT NOT NULL,
-              first_name TEXT, last_name TEXT,
-              fluxer_id TEXT, discord_id TEXT, irc_id TEXT,
-              callsign TEXT, dmr_id INTEGER, radio_affiliation TEXT,
-              street TEXT, country TEXT, postal_code TEXT, region TEXT,
-              submitted_at TEXT NOT NULL,
-              revoked_at TEXT, revocation_reason TEXT,
-              status TEXT NOT NULL DEFAULT 'active'
-            )"#,
+            r#"INSERT INTO keys (fingerprint, armored_key, email, submitted_at, status)
+               VALUES ('CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC', 'armor-victim', 'victim@test', '2024-06-01T12:00:00Z', 'active'),
+                      ('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 'armor-attacker', 'victim@test', '2020-01-01T00:00:00Z', 'active')"#,
         )
         .execute(&pool)
         .await
         .unwrap();
 
+        record_local_key_confirmation(&pool, "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC")
+            .await
+            .unwrap();
+        record_key_first_seen_if_absent(&pool, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+            .await
+            .unwrap();
+        // Attacker has lower fp and earlier first_seen — must still lose.
         sqlx::query(
-            r#"INSERT INTO keys (fingerprint, armored_key, email, submitted_at, status)
-               VALUES ('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 'armor1', 'e@test', '2020-01-01T00:00:00Z', 'active'),
-                      ('BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', 'armor2', 'e@test', '2022-01-01T00:00:00Z', 'active')"#,
+            "UPDATE key_local_first_seen SET first_seen_at = '2019-01-01T00:00:00Z' WHERE fingerprint = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'",
         )
         .execute(&pool)
         .await
@@ -776,20 +1044,145 @@ mod mesh_conflict_tests {
         let n = resolve_mesh_email_conflicts(&pool).await.unwrap();
         assert_eq!(n, 1);
 
-        let active_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM keys WHERE email = 'e@test' AND status = 'active'",
+        let kept: String = sqlx::query_scalar(
+            "SELECT fingerprint FROM keys WHERE email = 'victim@test' AND status = 'active'",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(active_count, 1);
+        assert_eq!(
+            kept, "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            "locally confirmed victim must beat mesh-only attacker"
+        );
+    }
 
-        let reason: Option<String> =
-            sqlx::query_scalar("SELECT revocation_reason FROM keys WHERE fingerprint LIKE 'BBBB%'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(reason.as_deref(), Some("mesh_conflict"));
+    #[tokio::test]
+    async fn resolve_replication_only_uses_first_seen_not_backdated_submitted_at() {
+        let pool = conflict_test_pool().await;
+
+        sqlx::query(
+            r#"INSERT INTO keys (fingerprint, armored_key, email, submitted_at, status)
+               VALUES ('CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC', 'armor-victim', 'victim@test', '2024-06-01T12:00:00Z', 'active'),
+                      ('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', 'armor-attacker', 'victim@test', '2020-01-01T00:00:00Z', 'active')"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"INSERT INTO key_local_first_seen (fingerprint, first_seen_at) VALUES
+               ('CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC', '2024-06-01T12:00:00Z'),
+               ('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', '2019-01-01T00:00:00Z')"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let n = resolve_mesh_email_conflicts(&pool).await.unwrap();
+        assert_eq!(n, 1);
+
+        let kept: String = sqlx::query_scalar(
+            "SELECT fingerprint FROM keys WHERE email = 'victim@test' AND status = 'active'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        // Attacker has lower fp AND backdated submitted_at AND earlier first_seen on this node.
+        assert_eq!(
+            kept, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "when neither locally confirmed, earliest first_seen wins (attacker observed first on this node)"
+        );
+
+        // Prove fingerprint-only would also pick attacker here — tiebreak is not the protection;
+        // local confirmation tier is.
+        assert_eq!(
+            mesh_conflict_winner_fingerprint_only(&[
+                "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC".into(),
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".into(),
+            ])
+            .as_deref(),
+            Some("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_crsql_wire_rows_cannot_inject_local_confirmation() {
+        let pool = conflict_test_pool().await;
+
+        sqlx::query(
+            r#"INSERT INTO keys (id, fingerprint, armored_key, email, submitted_at, status)
+               VALUES (1, 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB', 'armor', 'inj@test', '2024-01-01T00:00:00Z', 'active')"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS crsql_changes (
+                "table" TEXT NOT NULL,
+                pk BLOB NOT NULL,
+                cid TEXT NOT NULL,
+                val BLOB,
+                col_version INTEGER NOT NULL,
+                db_version INTEGER NOT NULL,
+                site_id BLOB NOT NULL,
+                cl BLOB,
+                seq INTEGER
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let hostile = vec![
+            CrsqlWireChange {
+                table_name: "key_local_confirmations".into(),
+                pk_b64: B64.encode(b"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"),
+                cid: "confirmed_at".into(),
+                val_b64: Some(B64.encode(b"2019-01-01T00:00:00Z")),
+                col_version: 1,
+                db_version: 99,
+                site_id_b64: B64.encode([0xDEu8]),
+                cl_b64: None,
+                seq: None,
+            },
+            CrsqlWireChange {
+                table_name: "key_local_first_seen".into(),
+                pk_b64: B64.encode(b"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"),
+                cid: "first_seen_at".into(),
+                val_b64: Some(B64.encode(b"2019-01-01T00:00:00Z")),
+                col_version: 1,
+                db_version: 100,
+                site_id_b64: B64.encode([0xDEu8]),
+                cl_b64: None,
+                seq: None,
+            },
+        ];
+
+        apply_crsql_wire_rows(&pool, &hostile).await.unwrap();
+
+        let confirmed: Option<String> = sqlx::query_scalar(
+            "SELECT confirmed_at FROM key_local_confirmations WHERE fingerprint = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert!(
+            confirmed.is_none(),
+            "apply path must not create local confirmation rows from hostile wire data"
+        );
+
+        // first_seen may be set by observe_keys for keys table rows only, not from forged provenance wire rows.
+        let first_seen: Option<String> = sqlx::query_scalar(
+            "SELECT first_seen_at FROM key_local_first_seen WHERE fingerprint = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert!(
+            first_seen.is_none(),
+            "forged key_local_first_seen wire rows must not populate local provenance"
+        );
     }
 }
 
@@ -957,5 +1350,53 @@ mod tests {
         let rows = list_keys(&pool, &f, 1, 50).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].fingerprint, r2.fingerprint);
+    }
+
+    #[tokio::test]
+    async fn list_keys_excludes_revoked_by_default() {
+        use crate::models::KeyFilter;
+
+        let pool = pool_migrated().await;
+        let ts = chrono::Utc::now().to_rfc3339();
+        let rec = NewKeyRecord {
+            fingerprint: "3000000000000000000000000000000000000003".into(),
+            armored_key: "a3".into(),
+            email: "revoked@example.com".into(),
+            first_name: None,
+            last_name: None,
+            fluxer_id: None,
+            discord_id: None,
+            irc_id: None,
+            callsign: Some("REVOKED1".into()),
+            dmr_id: None,
+            radio_affiliation: None,
+            street: None,
+            country: None,
+            postal_code: None,
+            region: None,
+            organisation: None,
+            role: None,
+            note: None,
+            badge_number: None,
+            submitted_at: ts,
+        };
+        insert_key(&pool, &rec).await.unwrap();
+        revoke_key(&pool, &rec.fingerprint, Some("test")).await.unwrap();
+
+        let f = KeyFilter {
+            callsign: Some("REVOKED1".into()),
+            ..Default::default()
+        };
+        let rows = list_keys(&pool, &f, 1, 50).await.unwrap();
+        assert!(rows.is_empty(), "default filter must exclude revoked keys");
+
+        let f_all = KeyFilter {
+            callsign: Some("REVOKED1".into()),
+            include_revoked: true,
+            ..Default::default()
+        };
+        let rows = list_keys(&pool, &f_all, 1, 50).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, "revoked");
     }
 }

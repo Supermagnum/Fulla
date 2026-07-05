@@ -76,7 +76,7 @@ fn client_ip(req: &Request<Body>) -> std::net::IpAddr {
         })
 }
 
-fn accept_prefers_json(headers: &HeaderMap) -> bool {
+pub fn accept_prefers_json(headers: &HeaderMap) -> bool {
     let Some(v) = headers.get(axum::http::header::ACCEPT) else {
         return false;
     };

@@ -2,10 +2,15 @@
 
 Repository: [github.com/Supermagnum/Fulla](https://github.com/Supermagnum/Fulla).
 
-Fulla is a closed Galdralag hardware key registry backed by SQLite. It exposes a web UI and API for key submission, confirmation, and revocation. Optional replication (CR-SQLite mesh, Litestream, SSH/rsync) is described under [Replication](#replication).
+Fulla is a **Galdralag hardware-profile** OpenPGP key registry backed by SQLite (only Cv25519, NIST P-256/P-384, and approved Brainpool curves are accepted — not legacy RSA/Ed25519 uploads). It exposes a web UI and API for key submission, confirmation, and revocation. **Registration policy** is operator-configurable: the default is **open self-registration** gated by mailbox confirmation; set `KEYSERVER_MUTATION_AUTH_SECRET` for a **closed** deployment where only clients holding the Bearer secret may submit or revoke. Optional replication (CR-SQLite mesh, Litestream, SSH/rsync) is described under [Replication](#replication).
+
+## Lineage
+
+Fulla is based on [**Hagrid**](https://gitlab.com/keys.openpgp.org/hagrid) — the Rust OpenPGP verifying keyserver that powers [keys.openpgp.org](https://keys.openpgp.org). This codebase has been **substantially modified** for Galdralag: hardware-profile certificate policy (curve allowlist), mailbox-gated registration, optional mutation auth, CR-SQLite mesh replication, and related hardening. It is not a drop-in fork of upstream Hagrid; behavior and deployment assumptions differ.
 
 ## Table of contents
 
+- [Lineage](#lineage)
 - [About the name](#about-the-name)
 - [Build and install on Ubuntu](#build-and-install-on-ubuntu)
 - [Dependencies and packages](#dependencies-and-packages)
@@ -289,7 +294,17 @@ Each production node requires on the order of **300 GB** of disk space for the d
 
 The peer sync listener runs on `sync_api_port` (HTTPS if `sync_tls_cert`/`sync_tls_key` are both set). Endpoints accept only `Authorization: Bearer <sync_authorization_secret>` and are meant for operators’ private meshes, not the public Internet.
 
-Cron-style sync pulls from each configured peer concurrently (up to 13 peers plus the local node, 14 nodes total). After applying remote changes Fulla resolves “same active email twice” collisions by keeping the earliest `submitted_at` and revoking the rest with reason `mesh_conflict`.
+Cron-style sync pulls from each configured peer concurrently (up to 13 peers plus the local node, 14 nodes total). After applying remote changes Fulla resolves “same active email twice” collisions using **per-node local provenance** (migration `010_key_local_provenance.sql`):
+
+1. A row **locally confirmed** on this node (`GET /confirm/{token}` handled here) always beats replication-only rows — regardless of fingerprint or replicated `submitted_at`.
+2. If both rows were locally confirmed on this node (rare), earliest `confirmed_at` wins.
+3. If neither was locally confirmed on this node, earliest **`first_seen_at`** wins (local wall clock when this node first observed the key as active via confirm or mesh apply — not mesh-writable).
+
+**Not used for precedence:** `submitted_at` (replicates as-is and can be backdated) and **fingerprint** (~50% win per keygen attempt against a known victim fp via `GET /keys?email=` — trivial to grind).
+
+**Upgrade requirement (conflict resolution):** Algorithm change with **local-only schema** (`key_local_confirmations`, `key_local_first_seen` are **not** CR-SQLite tables and do not replicate). Upgrade **all mesh nodes together** so every node runs the same resolver; mixed old/new nodes can pick different winners when neither side is locally confirmed on a given node. See `docs/FULLA_INTEGRATION.md`.
+
+**Upgrade requirement (pagination):** Mesh sync protocol version **2** adds paginated `GET /sync/changes`. Small batches sync fine across mixed versions during a staged rollout; **full pages from pre-v2 peers fail closed** (`TruncationBlockedError`, cursor not advanced) to prevent silent loss of revocations and other changes. Upgrade lagging peers promptly; see `docs/FULLA_INTEGRATION.md`.
 
 Prerequisites:
 

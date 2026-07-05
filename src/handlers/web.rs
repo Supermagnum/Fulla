@@ -45,7 +45,7 @@ pub struct KeyBrowseQuery {
     pub page: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_page: Option<u32>,
-    /// When set with `email` only and `Accept: application/json`, include revoked keys (default: active only, for device clients).
+    /// When set on multi-filter GET `/keys`, include revoked keys (default: active only for JSON clients).
     #[serde(default)]
     pub include_revoked: bool,
 }
@@ -138,6 +138,11 @@ pub async fn key_list(
         fluxer_id: fluxer.clone(),
         first_name_contains: first.clone(),
         last_name_contains: last.clone(),
+        include_revoked: if json_client {
+            q.include_revoked
+        } else {
+            true
+        },
     };
 
     let total = db::count_keys(&app.pool, &filter).await.map_err(internal)?;

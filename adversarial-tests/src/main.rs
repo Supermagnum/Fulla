@@ -1,6 +1,8 @@
 //! Adversarial HTTP tests against a running Fulla instance (Docker stack).
 
-use fulla_adversarial::*;
+mod fixtures;
+
+use fulla_adversarial::{poison_cert, *};
 
 use std::time::{Duration, Instant};
 
@@ -110,6 +112,8 @@ async fn main() -> Result<()> {
 
     let mut r = Report::default();
     run_malformed(&env, &mut r).await?;
+    run_bloated_certs(&env, &mut r).await?;
+    run_sks_poison_cert(&env, &mut r).await?;
     run_homoglyph(&env, &mut r).await?;
     run_tokens(&env, &mut r).await?;
     run_automated(&env, &mut r).await?;
@@ -324,6 +328,113 @@ async fn run_rate_limit(env: &Env, r: &mut Report) -> Result<()> {
     Ok(())
 }
 
+async fn run_bloated_certs(env: &Env, r: &mut Report) -> Result<()> {
+    let cases = [
+        "excess_userids",
+        "excess_subkeys",
+        "excess_userids_and_subkeys",
+    ];
+
+    for name in cases {
+        let email = unique_email(name);
+        let armored = match name {
+            "excess_userids" => fixtures::armored_excess_userids(&email, 20),
+            "excess_subkeys" => fixtures::armored_excess_subkeys(&email, 40),
+            _ => fixtures::armored_excess_userids_and_subkeys(&email),
+        };
+        let armored = match armored {
+            Ok(a) => a,
+            Err(e) => {
+                r.finding(
+                    "malformed",
+                    format!("bloated_cert_{name}_fixture"),
+                    format!("fixture generation failed: {e:#}"),
+                );
+                continue;
+            }
+        };
+        let resp = post_submit_json(
+            env,
+            &json!({ "email": email, "armored_public_key": armored }),
+        )
+        .await?;
+        let status = resp.status().as_u16();
+        if status == 422 {
+            r.pass(
+                "malformed",
+                format!("bloated_cert_{name}"),
+                "HTTP 422 structural limit rejected",
+            );
+        } else if (200..300).contains(&status) || status == 202 {
+            r.finding(
+                "malformed",
+                format!("bloated_cert_{name}"),
+                format!("expected HTTP 422, got {status}"),
+            );
+        } else if status >= 500 {
+            r.finding(
+                "malformed",
+                format!("bloated_cert_{name}"),
+                format!("HTTP 500 on poison-style cert"),
+            );
+        } else {
+            r.pass(
+                "malformed",
+                format!("bloated_cert_{name}"),
+                format!("HTTP {status} (non-success, acceptable rejection)"),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_sks_poison_cert(env: &Env, r: &mut Report) -> Result<()> {
+    let email = poison_cert::FIXTURE_EMAIL;
+    let armored = poison_cert::armored_from_fixture();
+    let resp = post_submit_json(
+        env,
+        &json!({ "email": email, "armored_public_key": armored }),
+    )
+    .await?;
+    let status = resp.status().as_u16();
+    let body = resp.text().await.unwrap_or_default();
+    if status == 422 {
+        let kind = poison_cert::classify_structure_reject(&body);
+        let detail = match kind {
+            poison_cert::StructureRejectKind::PerUidSelfSignatures => {
+                "HTTP 422 — per-UID self-signature cap on raw import stream (check_raw_packet_structure)"
+            }
+            poison_cert::StructureRejectKind::TotalSignaturePackets => {
+                "HTTP 422 — total signature-packet cap (check_cert_structure)"
+            }
+            poison_cert::StructureRejectKind::Other => {
+                "HTTP 422 — structural rejection (see body)"
+            }
+        };
+        r.pass("malformed", "sks_poison_uid_selfsig_flood", detail);
+    } else if (200..300).contains(&status) || status == 202 {
+        r.finding(
+            "malformed",
+            "sks_poison_uid_selfsig_flood",
+            format!("expected HTTP 422, got {status}"),
+        );
+    } else if status >= 500 {
+        r.finding(
+            "malformed",
+            "sks_poison_uid_selfsig_flood",
+            format!("HTTP 500 on SKS poison fixture: {body}"),
+        );
+    } else {
+        r.pass(
+            "malformed",
+            "sks_poison_uid_selfsig_flood",
+            format!("HTTP {status} (non-success rejection)"),
+        );
+    }
+    Ok(())
+}
+
 async fn run_homoglyph(env: &Env, r: &mut Report) -> Result<()> {
     // Fixed local-part; vary only domain/case so OpenPGP User ID stays consistent per attempt.
     let n: u32 = rand::random();
@@ -460,18 +571,12 @@ async fn run_automated(env: &Env, r: &mut Report) -> Result<()> {
         }
     }
 
-    // Search returns revoked without status filter (known gap) — probe API shape
-    let resp = env
-        .client
-        .get(format!("{}/keys?callsign=ZZZZNOTFOUND", env.fulla))
-        .header("Accept", "application/json")
-        .send()
-        .await?;
-    if resp.status().is_success() || resp.status().as_u16() == 404 {
-        r.gap(
+    // Multi-filter search excludes revoked keys by default
+    if let Err(e) = run_search_revoked_filter(env, r).await {
+        r.finding(
             "automated",
             "search_revoked_filter_gap",
-            "multi-filter GET /keys has no active-only filter; revoked rows appear when present (prior investigation)",
+            format!("probe failed: {e:#}"),
         );
     }
 
@@ -493,6 +598,103 @@ async fn run_automated(env: &Env, r: &mut Report) -> Result<()> {
             "slow_partial_post",
             format!("closed early: {e:#}"),
         ),
+    }
+
+    Ok(())
+}
+
+async fn run_search_revoked_filter(env: &Env, r: &mut Report) -> Result<()> {
+    let n: u32 = rand::random();
+    let email = format!("revsearch-{n:x}@adv.test");
+    let callsign = format!("ADV{n:x}");
+    let (armored, rev_armored) = armored_cv25519_with_revocation(&email)?;
+
+    clear_mailhog(env).await?;
+    let submit = post_submit_json(
+        env,
+        &json!({
+            "email": email,
+            "armored_public_key": armored,
+            "callsign": callsign,
+        }),
+    )
+    .await?;
+    if !submit.status().is_success() && submit.status().as_u16() != 202 {
+        anyhow::bail!("submit failed: HTTP {}", submit.status());
+    }
+
+    wait_for_mail(env, Duration::from_secs(15)).await?;
+    let token = latest_confirm_token(env).await?;
+    let confirm = env
+        .client
+        .get(format!("{}/confirm/{token}", env.fulla))
+        .send()
+        .await?;
+    if !confirm.status().is_success() {
+        anyhow::bail!("confirm failed: HTTP {}", confirm.status());
+    }
+
+    let revoke = env
+        .client
+        .post(format!("{}/api/v1/keys/revoke", env.fulla))
+        .header("Accept", "application/json")
+        .json(&json!({
+            "email": email,
+            "armored_revocation_cert": rev_armored,
+        }))
+        .send()
+        .await?;
+    if !revoke.status().is_success() {
+        anyhow::bail!("revoke failed: HTTP {}", revoke.status());
+    }
+
+    let search_active = env
+        .client
+        .get(format!("{}/keys?callsign={callsign}", env.fulla))
+        .header("Accept", "application/json")
+        .send()
+        .await?;
+    if !search_active.status().is_success() {
+        anyhow::bail!("search active failed: HTTP {}", search_active.status());
+    }
+    let active_rows: Vec<serde_json::Value> = search_active.json().await?;
+    if !active_rows.is_empty() {
+        r.finding(
+            "automated",
+            "search_revoked_filter_gap",
+            format!(
+                "multi-filter search returned {} row(s) for revoked callsign without include_revoked",
+                active_rows.len()
+            ),
+        );
+        return Ok(());
+    }
+
+    let search_all = env
+        .client
+        .get(format!(
+            "{}/keys?callsign={callsign}&include_revoked=true",
+            env.fulla
+        ))
+        .header("Accept", "application/json")
+        .send()
+        .await?;
+    if !search_all.status().is_success() {
+        anyhow::bail!("search all failed: HTTP {}", search_all.status());
+    }
+    let all_rows: Vec<serde_json::Value> = search_all.json().await?;
+    if all_rows.len() == 1 && all_rows[0]["status"] == "revoked" {
+        r.pass(
+            "automated",
+            "search_revoked_filter_gap",
+            "multi-filter GET /keys excludes revoked by default; include_revoked=true returns revoked row",
+        );
+    } else {
+        r.finding(
+            "automated",
+            "search_revoked_filter_gap",
+            format!("include_revoked=true expected 1 revoked row, got {all_rows:?}"),
+        );
     }
 
     Ok(())
@@ -599,7 +801,7 @@ async fn run_tokens(env: &Env, r: &mut Report) -> Result<()> {
         "tokens",
         "token_timing_side_channel",
         format!(
-            "avg wrong confirm {:.3}s vs wrong reject {:.3}s — 256-bit token; DB lookup not constant-time (acceptable given entropy)",
+            "probe runs 10x GET /confirm/{{wrong}} vs /reject/{{wrong}}; avg confirm {:.6}s vs reject {:.6}s — sub-millisecond resolution cannot distinguish paths; 256-bit token entropy dominates (not a silent no-op)",
             avg_wrong, avg_reject
         ),
     );

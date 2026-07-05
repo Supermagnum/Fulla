@@ -8,7 +8,7 @@ name = "fulla"
 path = "src/main.rs"
 
 [dependencies]
-sequoia-openpgp = { version = "1", default-features = false, features = [
+sequoia-openpgp = { version = "2.1", default-features = false, features = [
     "compression-deflate",
     "crypto-rust",
     "allow-experimental-crypto",
@@ -55,4 +55,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 base64 = "0.22"
 percent-encoding = "2"
 url = "2"
+quinn-proto = "0.11.15" # RUSTSEC-2026-0185: pin transitive via reqwest/quinn
+sha2 = "0.10"
 confusables = "0.1"
+subtle = "2"

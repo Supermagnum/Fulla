@@ -26,21 +26,33 @@ This removes bind-mounted SQLite under `docker/data/` and clears MailHog's in-me
 - **TLS:** disabled in this stack (plain HTTP). Production should terminate TLS at a reverse proxy or via `KEYSERVER_TLS_*`.
 - **SQLite:** `DATABASE_URL=sqlite:/data/keyserver.db?mode=rwc` in `fulla.env` (`?mode=rwc` required for sqlx file creation in-container).
 - **SMTP:** MailHog on port 1025; `KEYSERVER_SMTP_TLS=false` for plain SMTP. MailHog does not support SMTPUTF8.
-- **Rate limit:** `KEYSERVER_RATE_LIMIT_SUBMISSIONS=50` and `KEYSERVER_RATE_LIMIT_READS=500` so the adversarial suite can finish before the 429 probes (see `docs/SECURITY_TEST_RESULTS.md`).
+- **Rate limit:** `KEYSERVER_RATE_LIMIT_SUBMISSIONS=50`, `KEYSERVER_RATE_LIMIT_READS=500`, and `KEYSERVER_RATE_LIMIT_SUBMISSIONS_GLOBAL=5000` so the adversarial suite can finish before the 429 probes (see `docs/SECURITY_TEST_RESULTS.md`).
 
-## Run adversarial suite
+## Run full adversarial pipeline
 
-From the repository root after the stack is up:
+From the repository root:
 
 ```bash
 ./docker/run-adversarial.sh
 ```
 
-Or manually:
+Stages (exit 1 on any blocking finding):
+
+1. **`docker/run-supply-chain.sh`** — `cargo audit` + `cargo deny check`
+2. **Docker stack** — `docker compose up -d --build` (Fulla + MailHog)
+3. **`docker/run-scanners.sh`** — trivy, nuclei, nikto, sqlmap, OWASP ZAP baseline (via Docker images when host tools absent)
+4. **Custom probes** — `adversarial-tests/` Rust harness
+
+Supply-chain only (no Docker):
 
 ```bash
-cd adversarial-tests
-FULLA_BASE_URL=http://127.0.0.1:8080 MAILHOG_API=http://127.0.0.1:8025 cargo run --release
+./docker/run-supply-chain.sh
+```
+
+Scanner stage only (stack must already be up):
+
+```bash
+./docker/run-scanners.sh
 ```
 
 ## View confirmation emails

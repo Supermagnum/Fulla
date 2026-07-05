@@ -1,0 +1,10 @@
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+Trying to pull docker.io/aquasec/trivy:latest...
+Getting image source signatures
+Copying blob sha256:55afa1ecc21d2bb5e5045f32dafee56272ffd89860bac26f6c32123439af26a4
+Copying blob sha256:7003a2b1b982141dbb9b5e4abe0a2b786c87b5083cb968b1a8ec8c6a72590fc7
+Copying blob sha256:47f2314812cda08291640c57ce9dc204573d4aee0500726ba12670b74c49b91e
+Copying blob sha256:f47b905a4150028770509b374cf8ae11d45599679ed6d5e4a5c7b00f981878ac
+Copying config sha256:b81e075c68ad4b1a567e7b4d511e3b0493b0087ae708ff4dd607c497cde1daf6
+Writing manifest to image destination
+Error: statfs /var/run/docker.sock: permission denied

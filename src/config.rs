@@ -26,6 +26,16 @@ pub struct Config {
     pub keyserver_rate_limit_submissions_global: Option<u32>,
     /// Optional global hourly cap on rate-limited GET paths (`None` = off).
     pub keyserver_rate_limit_reads_global: Option<u32>,
+    /// Optional Bearer secret for POST submit/revoke (`None` = open registry).
+    pub keyserver_mutation_auth_secret: Option<String>,
+    /// Max armored key/revocation upload size in bytes.
+    pub keyserver_max_key_upload_bytes: usize,
+    /// Max User ID packets per certificate (SKS-poisoning guard).
+    pub keyserver_max_cert_userids: u32,
+    /// Max key components (primary + subkeys) per certificate.
+    pub keyserver_max_cert_keys: u32,
+    /// Max self-signatures per User ID binding.
+    pub keyserver_max_uid_self_signatures: u32,
     pub replication: ReplicationConfig,
 }
 
@@ -44,6 +54,9 @@ pub struct MeshConfig {
     pub enabled: bool,
     pub node_id_path: PathBuf,
     pub crsqlite_extension_path: PathBuf,
+    /// Optional SHA-256 hex digest of `crsqlite_extension_path` (checked before load).
+    #[serde(default)]
+    pub crsqlite_extension_sha256: Option<String>,
     #[serde(default = "default_interval")]
     pub sync_interval_minutes: u64,
     pub sync_api_port: u16,
@@ -53,6 +66,15 @@ pub struct MeshConfig {
     pub peers: Vec<PeerConfig>,
     #[serde(default)]
     pub sync_authorization_secret: String,
+    /// Max HTTP body size on mesh sync API (default 1 MiB).
+    #[serde(default = "default_sync_max_body_bytes")]
+    pub sync_max_body_bytes: usize,
+    /// Max CR-SQLite change rows per POST `/sync/apply`.
+    #[serde(default = "default_sync_max_changes")]
+    pub sync_max_changes_per_request: usize,
+    /// Global hourly request cap on mesh sync API (`0` = unlimited).
+    #[serde(default = "default_sync_rate_limit")]
+    pub sync_rate_limit_requests: u32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -101,6 +123,21 @@ fn default_offset() -> u64 {
     5
 }
 
+fn default_sync_max_body_bytes() -> usize {
+    1024 * 1024
+}
+
+fn default_sync_max_changes() -> usize {
+    10_000
+}
+
+fn default_sync_rate_limit() -> u32 {
+    600
+}
+
+/// Minimum shared-secret length for mutation auth and mesh sync bearer tokens.
+pub const MIN_AUTH_SECRET_LEN: usize = 16;
+
 pub const MAX_MESH_PEERS: usize = 13;
 
 impl ReplicationConfig {
@@ -110,6 +147,14 @@ impl ReplicationConfig {
                 return Err(anyhow!(
                     "[replication.mesh] enabled requires a non-empty sync_authorization_secret"
                 ));
+            }
+            if mesh.enabled {
+                let secret = mesh.sync_authorization_secret.trim();
+                if secret.len() < MIN_AUTH_SECRET_LEN {
+                    return Err(anyhow!(
+                        "[replication.mesh] sync_authorization_secret must be at least {MIN_AUTH_SECRET_LEN} characters"
+                    ));
+                }
             }
             if mesh.enabled && mesh.peers.len() > MAX_MESH_PEERS {
                 return Err(anyhow!(
@@ -175,10 +220,24 @@ impl Config {
             keyserver_rate_limit_submissions = 5;
         }
         let keyserver_rate_limit_reads = parse_reads_limit("KEYSERVER_RATE_LIMIT_READS", 1200);
-        let keyserver_rate_limit_submissions_global =
-            parse_optional_u32("KEYSERVER_RATE_LIMIT_SUBMISSIONS_GLOBAL");
+        let keyserver_rate_limit_submissions_global = parse_global_submissions_limit();
         let keyserver_rate_limit_reads_global =
             parse_optional_u32("KEYSERVER_RATE_LIMIT_READS_GLOBAL");
+        let keyserver_mutation_auth_secret = opt_secret("KEYSERVER_MUTATION_AUTH_SECRET");
+        if let Some(ref s) = keyserver_mutation_auth_secret {
+            if s.len() < MIN_AUTH_SECRET_LEN {
+                return Err(anyhow!(
+                    "KEYSERVER_MUTATION_AUTH_SECRET must be at least {MIN_AUTH_SECRET_LEN} characters when set"
+                ));
+            }
+        }
+        let keyserver_max_key_upload_bytes =
+            parse_usize_default("KEYSERVER_MAX_KEY_UPLOAD_BYTES", 128 * 1024);
+        let keyserver_max_cert_userids =
+            parse_u32_default("KEYSERVER_MAX_CERT_USERIDS", 16);
+        let keyserver_max_cert_keys = parse_u32_default("KEYSERVER_MAX_CERT_KEYS", 32);
+        let keyserver_max_uid_self_signatures =
+            parse_u32_default("KEYSERVER_MAX_UID_SELF_SIGNATURES", 32);
 
         let replication = replication_from_optional_toml()?;
 
@@ -198,6 +257,11 @@ impl Config {
             keyserver_rate_limit_reads,
             keyserver_rate_limit_submissions_global,
             keyserver_rate_limit_reads_global,
+            keyserver_mutation_auth_secret,
+            keyserver_max_key_upload_bytes,
+            keyserver_max_cert_userids,
+            keyserver_max_cert_keys,
+            keyserver_max_uid_self_signatures,
             replication,
         })
     }
@@ -277,6 +341,15 @@ fn parse_u32(name: &'static str) -> Option<u32> {
     std::env::var(name).ok().and_then(|v| v.trim().parse().ok())
 }
 
+/// Global mutation cap: unset → 300/hour, explicit `0` → disabled, else parsed value.
+fn parse_global_submissions_limit() -> Option<u32> {
+    match std::env::var("KEYSERVER_RATE_LIMIT_SUBMISSIONS_GLOBAL") {
+        Ok(v) if v.trim() == "0" => None,
+        Ok(v) => Some(v.trim().parse().unwrap_or(300)).filter(|&n| n > 0),
+        Err(_) => Some(300),
+    }
+}
+
 fn parse_optional_u32(name: &'static str) -> Option<u32> {
     std::env::var(name)
         .ok()
@@ -303,6 +376,25 @@ fn parse_bool(name: &'static str, default: bool) -> bool {
     }
 }
 
+fn opt_secret(name: &'static str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn parse_u32_default(name: &'static str, default: u32) -> u32 {
+    parse_u32(name).unwrap_or(default).max(1)
+}
+
+fn parse_usize_default(name: &'static str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(default)
+        .max(1024)
+}
+
 #[cfg(test)]
 impl Config {
     pub fn test_local() -> Self {
@@ -322,6 +414,11 @@ impl Config {
             keyserver_rate_limit_reads: None,
             keyserver_rate_limit_submissions_global: None,
             keyserver_rate_limit_reads_global: None,
+            keyserver_mutation_auth_secret: None,
+            keyserver_max_key_upload_bytes: 128 * 1024,
+            keyserver_max_cert_userids: 256,
+            keyserver_max_cert_keys: 256,
+            keyserver_max_uid_self_signatures: 256,
             replication: ReplicationConfig::default(),
         }
     }
@@ -345,12 +442,16 @@ mod replication_validation_tests {
             enabled: true,
             node_id_path: "/tmp/n".into(),
             crsqlite_extension_path: "/tmp/e".into(),
+            crsqlite_extension_sha256: None,
             sync_interval_minutes: 60,
             sync_api_port: 9443,
             sync_tls_cert: None,
             sync_tls_key: None,
             peers,
-            sync_authorization_secret: "secret".into(),
+            sync_authorization_secret: "secret-long-enough!!".into(),
+            sync_max_body_bytes: default_sync_max_body_bytes(),
+            sync_max_changes_per_request: default_sync_max_changes(),
+            sync_rate_limit_requests: default_sync_rate_limit(),
         };
         let rep = ReplicationConfig {
             mesh: Some(mesh),

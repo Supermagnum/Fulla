@@ -206,4 +206,6 @@ pub struct KeyFilter {
     pub fluxer_id: Option<String>,
     pub first_name_contains: Option<String>,
     pub last_name_contains: Option<String>,
+    /// When false, restrict to `status = 'active'` (default via `Default`).
+    pub include_revoked: bool,
 }
