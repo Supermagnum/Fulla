@@ -16,6 +16,7 @@ Fulla is based on [**Hagrid**](https://gitlab.com/keys.openpgp.org/hagrid) — t
 - [Dependencies and packages](#dependencies-and-packages)
 - [Configuration overview](#configuration-overview)
   - [Key submission and mailbox confirmation](#key-submission-and-mailbox-confirmation)
+  - [SMTP and outbound mail](#smtp-and-outbound-mail)
   - [Key listing and search](#key-listing-and-search)
 - [Security testing (Docker)](#security-testing-docker)
 - [Galdralag integration](#galdralag-integration)
@@ -25,6 +26,7 @@ Fulla is based on [**Hagrid**](https://gitlab.com/keys.openpgp.org/hagrid) — t
 - [Debugging and troubleshooting](#debugging-and-troubleshooting)
 - [Galdra compatibility](#galdra--galdralag-firmware-compatibility)
 - [Replication](#replication)
+- [Replication setup guide](#replication-setup-guide)
 - [Maintainer scope and support](#maintainer-scope-and-support)
 
 ## About the name
@@ -93,11 +95,11 @@ Most cryptographic and TLS usage in this tree goes through **Rustls** and **pure
 | Component | When needed |
 |-----------|-------------|
 | **SQLite database file or path** | `DATABASE_URL` must point at a persistent SQLite URL (see `.env.example`) |
-| **SMTP** | Outbound mail for confirmations (`KEYSERVER_*_SMTP_*` variables) |
+| **SMTP** | Outbound mail for confirmations — see **[docs/SMTP_AND_MAIL.md](docs/SMTP_AND_MAIL.md)** (`KEYSERVER_*_SMTP_*` variables) |
 | **TLS certificate and key** (optional for the main site) | If `KEYSERVER_TLS_CERT` / `KEYSERVER_TLS_KEY` are set, the main listener uses HTTPS |
-| **CR-SQLite shared library** | Only when `[replication.mesh] enabled = true`; path set by `crsqlite_extension_path`. SQLite must support `load_extension` (bundled/driver build must expose it) |
-| **`litestream` binary** | Only when `[replication.litestream] enabled = true` |
-| **`ssh` + `rsync`** | Only when `[replication.ssh] enabled = true` |
+| **CR-SQLite shared library** | Only when `[replication.mesh] enabled = true` — see **[docs/REPLICATION.md](docs/REPLICATION.md)** |
+| **`litestream` binary** | Only when `[replication.litestream] enabled = true` — see **[docs/REPLICATION.md](docs/REPLICATION.md)** |
+| **`ssh` + `rsync`** | Only when `[replication.ssh] enabled = true` — see **[docs/REPLICATION.md](docs/REPLICATION.md)** |
 
 Optional mesh peers need outbound HTTPS access to each other’s `sync_api_port` (or plain HTTP if you deliberately omit TLS on the mesh listener in non-production setups).
 
@@ -106,7 +108,7 @@ Optional mesh peers need outbound HTTPS access to each other’s `sync_api_port`
 Two layers matter for operators:
 
 1. **Environment variables** (typically from `.env` or systemd `Environment`): main bind address, base URL, database URL, SMTP, rate limits. See `.env.example`.
-2. **`FULLA_CONFIG`**: path to a TOML fragment containing **`[replication]`** sections. If unset, replication defaults stay off.
+2. **`FULLA_CONFIG`**: path to a TOML fragment containing **`[replication]`** sections. If unset, replication defaults stay off. Setup walkthrough: **[docs/REPLICATION.md](docs/REPLICATION.md)** and [`config.toml.example`](config.toml.example).
 
 **Ports** come from configuration, not from hard-coded defaults only:
 
@@ -127,6 +129,12 @@ Every new registration (`POST /submit`, `POST /api/v1/keys`) and every **replace
 4. Until confirmation, the key is **not** in `keys` and does not appear in search or fetch.
 
 Re-submitting the **same** fingerprint and armored material while the key is already active is **idempotent** and returns **`accepted`** without sending mail. Only one unexpired pending row is allowed per email at a time.
+
+SMTP is **required at startup** and **must deliver** for new registrations to become active. You do not need to host your own mail server — any outbound relay (or MailHog for local testing) is enough. Full details: **[docs/SMTP_AND_MAIL.md](docs/SMTP_AND_MAIL.md)**.
+
+### SMTP and outbound mail
+
+Operator guide for production SMTP, MailHog in Docker, required environment variables, and troubleshooting: **[docs/SMTP_AND_MAIL.md](docs/SMTP_AND_MAIL.md)**.
 
 ### Key listing and search
 
@@ -204,7 +212,7 @@ If you terminate TLS at a reverse proxy, the proxy listens on **443/tcp** and fo
 
 ### Outbound
 
-- **SMTP**: usually **587/tcp** (STARTTLS) to your mail provider (`KEYSERVER_SMTP_HOST` / `KEYSERVER_SMTP_PORT`).
+- **SMTP**: usually **587/tcp** (STARTTLS) to your mail provider — see **[docs/SMTP_AND_MAIL.md](docs/SMTP_AND_MAIL.md)**.
 - **Mesh peers**: outbound **HTTPS** (or HTTP if configured) toward each peer `address` host and **`sync_api_port`**.
 - **Litestream**: whatever your `replica_url` requires (**443** for S3-compatible APIs, **22** for SFTP targets, etc.).
 
@@ -267,6 +275,10 @@ Litestream and SSH/rsync replication provide **additional** offline backup snaps
 
 Configuration lives in `[replication]` inside the TOML file pointed at by `FULLA_CONFIG`. Other Fulla settings still come from `.env`/environment variables.
 
+### Replication setup guide
+
+Operator walkthrough with **example IPs**, two- and three-node mesh configs, firewall rules, VPN layout, Litestream, SSH/rsync, and troubleshooting: **[docs/REPLICATION.md](docs/REPLICATION.md)**.
+
 ### Designed regions
 
 Place one node in each region for maximum resilience:
@@ -311,7 +323,7 @@ Prerequisites:
 - Build or install the CR-SQLite loadable extension (`crsqlite.so` / `.dylib` / `.dll`), for example from the [releases](https://github.com/vlcn-io/cr-sqlite/releases).
 - SQLite must expose `load_extension` (build with `SQLITE_ENABLE_LOAD_EXTENSION` where applicable).
 
-Enable in `config.toml`:
+Enable in `config.toml` (full two-node example with IPs in **[docs/REPLICATION.md](docs/REPLICATION.md)**):
 
 ```toml
 [replication.mesh]

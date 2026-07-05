@@ -362,7 +362,7 @@ Migrations run in order (`001` … `010`):
 
 ## Replication
 
-Configured via `FULLA_CONFIG` TOML, validated in `ReplicationConfig::validate()`.
+Configured via `FULLA_CONFIG` TOML, validated in `ReplicationConfig::validate()`. Operator setup (example IPs, firewall, Litestream, SSH): **[REPLICATION.md](REPLICATION.md)**.
 
 ### CR-SQLite mesh (`replication/mesh.rs`)
 

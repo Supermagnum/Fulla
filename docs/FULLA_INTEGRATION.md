@@ -103,7 +103,7 @@ Fulla exposes `POST /api/v1/keys/revoke` (OpenPGP revocation certificate). **`ga
 
 1. **TLS:** Prefer reverse proxy (nginx/Caddy) on `:443` → Fulla `KEYSERVER_BIND` on localhost, or Fulla native rustls with operator-managed certs.
 2. **Firewall:** Public `:443` (or your chosen port) for users; **do not** expose mesh `sync_api_port` (see README replication section).
-3. **SMTP:** Real provider for confirmation mail in production; MailHog only for Docker tests. Set `KEYSERVER_SMTP_TLS=false` for plain SMTP sinks (MailHog). For non-ASCII recipient addresses, the relay must support **SMTPUTF8**.
+3. **SMTP:** Real provider for confirmation mail in production; MailHog only for Docker tests. See **[SMTP_AND_MAIL.md](SMTP_AND_MAIL.md)** for required variables, delivery requirements, and troubleshooting. Set `KEYSERVER_SMTP_TLS=false` for plain SMTP sinks (MailHog). For non-ASCII recipient addresses, the relay must support **SMTPUTF8**.
 4. **Rate limits:** `KEYSERVER_RATE_LIMIT_SUBMISSIONS` (per-IP hourly on POST submit/revoke). **`KEYSERVER_RATE_LIMIT_SUBMISSIONS_GLOBAL` defaults to 300/hour** when unset (`0` disables) — caps cluster-wide registration spam that bypasses per-IP limits via botnets or rotating proxies. Optional `KEYSERVER_RATE_LIMIT_READS_GLOBAL`. Read paths are limited per IP via `KEYSERVER_RATE_LIMIT_READS` (default 1200/hour; `0` disables). Confirm/reject links are exempt. One pending row per **canonical** mailbox identity limits confirmation-mail spam.
 5. **Spam vs openness:** Open self-registration inherently trades spam-resistance for accessibility. Per-IP and global rate limits are **mitigations**, not guarantees against distributed abuse. For deployments where unsolicited registration spam is unacceptable, set **`KEYSERVER_MUTATION_AUTH_SECRET`** (closed registry — Bearer on POST submit/revoke only; fetch/confirm stay public). Proof-of-work was not added: it would complicate Galdra handset push and the web form without replacing the need for mailbox confirmation.
 6. **Private single-operator:** Same software; restrict who can reach the listener. Open submission remains possible for anyone on that network unless you add front-door controls.
@@ -114,7 +114,7 @@ Fulla exposes `POST /api/v1/keys/revoke` (OpenPGP revocation certificate). **`ga
 
 ## CR-SQLite mesh replication (operators)
 
-Fulla’s optional mesh sync is configured via `[replication.mesh]` in `FULLA_CONFIG` (see [README replication section](../README.md#replication)). This is separate from Galdra client push/fetch on `:8080`.
+Fulla’s optional mesh sync is configured via `[replication.mesh]` in `FULLA_CONFIG`. Step-by-step setup with example IPs: **[REPLICATION.md](REPLICATION.md)**. Overview: [README replication section](../README.md#replication). This section covers protocol behaviour and conflict resolution (separate from Galdra client push/fetch on `:8080`).
 
 ### CR-SQLite native extension integrity
 
@@ -247,6 +247,8 @@ curl -sS 'http://127.0.0.1:8080/keys?email=you@example.com' -H 'Accept: applicat
 | This file | Fulla `docs/FULLA_INTEGRATION.md` |
 | Operator README | Fulla `README.md` |
 | Docker + MailHog | Fulla `docker/README.md` |
+| SMTP and outbound mail | Fulla `docs/SMTP_AND_MAIL.md` |
+| Replication setup (mesh, Litestream, SSH) | Fulla `docs/REPLICATION.md` |
 | Adversarial test results (executed) | Fulla `docs/SECURITY_TEST_RESULTS.md` |
 | HTTP API reference (GUI / third-party) | Fulla `docs/API.md` |
 | `galdra keyserver` implementation | Galdralag-firmware `galdra/src/commands/keyserver/` |

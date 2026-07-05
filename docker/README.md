@@ -25,7 +25,7 @@ This removes bind-mounted SQLite under `docker/data/` and clears MailHog's in-me
 
 - **TLS:** disabled in this stack (plain HTTP). Production should terminate TLS at a reverse proxy or via `KEYSERVER_TLS_*`.
 - **SQLite:** `DATABASE_URL=sqlite:/data/keyserver.db?mode=rwc` in `fulla.env` (`?mode=rwc` required for sqlx file creation in-container).
-- **SMTP:** MailHog on port 1025; `KEYSERVER_SMTP_TLS=false` for plain SMTP. MailHog does not support SMTPUTF8.
+- **SMTP:** MailHog on port 1025; `KEYSERVER_SMTP_TLS=false` for plain SMTP. MailHog does not support SMTPUTF8. See **[docs/SMTP_AND_MAIL.md](../docs/SMTP_AND_MAIL.md)** for production vs test mail requirements.
 - **Rate limit:** `KEYSERVER_RATE_LIMIT_SUBMISSIONS=50`, `KEYSERVER_RATE_LIMIT_READS=500`, and `KEYSERVER_RATE_LIMIT_SUBMISSIONS_GLOBAL=5000` so the adversarial suite can finish before the 429 probes (see `docs/SECURITY_TEST_RESULTS.md`).
 
 ## Run full adversarial pipeline

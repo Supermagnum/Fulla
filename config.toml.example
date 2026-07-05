@@ -1,15 +1,45 @@
-# Example Fulla replication-only TOML fragment. Point FULLA_CONFIG at this file.
+# Fulla replication configuration. Point FULLA_CONFIG at this file.
+# All other settings (bind, SMTP, rate limits) stay in .env — see .env.example.
 #
+# Step-by-step mesh setup with example IPs: docs/REPLICATION.md
+
+# ---------------------------------------------------------------------------
+# CR-SQLite bidirectional mesh (optional; disabled by default)
+# ---------------------------------------------------------------------------
+# [replication.mesh]
+# enabled = true
+# node_id_path = "/var/lib/fulla/node_id"
+# crsqlite_extension_path = "/usr/local/lib/crsqlite.so"
+# # Optional SHA-256 pin (64 hex chars) — see docs/REPLICATION.md
+# # crsqlite_extension_sha256 = "..."
+# sync_authorization_secret = "change-me-min-16-chars-shared-on-all-nodes"
+# sync_interval_minutes = 60
+# sync_api_port = 9443
+# sync_tls_cert = "/etc/fulla/sync.crt"
+# sync_tls_key  = "/etc/fulla/sync.key"
+#
+# [[replication.mesh.peers]]
+# node_id = "b2222222-2222-4222-8222-222222222222"
+# region  = "Western Europe"
+# address = "https://203.0.113.20:9443"
+# # dynamic_dns_host = "fulla-peer.dyndns.example.net"
+
+# ---------------------------------------------------------------------------
+# Litestream disaster recovery (optional)
+# ---------------------------------------------------------------------------
 # [replication.litestream]
 # enabled = false
-# replica_url = "s3://mybucket/fulla-db"
+# replica_url = "s3://mybucket/fulla-oslo?region=eu-north-1"
 # dynamic_dns_host = "fulla-replica.dyndns.example.com"
 # interval_minutes = 60
-#
+
+# ---------------------------------------------------------------------------
+# SSH/rsync file copy (optional)
+# ---------------------------------------------------------------------------
 # [replication.ssh]
 # enabled = false
 # remote_user = "fulla"
-# remote_host = "replica.example.com"
+# remote_host = "203.0.113.50"
 # remote_path = "/var/lib/fulla/keyserver.db"
 # ssh_key_path = "/etc/fulla/replication_id_ed25519"
 # dynamic_dns_host = "fulla-replica.dyndns.example.com"
